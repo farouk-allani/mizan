@@ -13,13 +13,36 @@ import type { Ledger } from '../../core/ledger.js';
  *                    per call THROUGH twak's x402 client — the agent funds its own data
  *                    inside the trade loop (TWAK prize, "native x402" criterion).
  *
- * Both speak MCP JSON-RPC `tools/call` over streamable HTTP. Tool names verified
- * against the CMC MCP page: get_crypto_quotes_latest, get_crypto_technical_analysis,
- * get_global_metrics_latest, get_global_crypto_derivatives_metrics, ...
+ * Both speak MCP JSON-RPC `tools/call` over streamable HTTP. Tool names AND payload
+ * shapes verified against the live Agent Hub (2026-06-13). Two facts the API enforces
+ * that earlier drafts got wrong, pinned here:
+ *   1. Quote/technical tools key on numeric `id`, NOT `symbol` (see CMC_ID below).
+ *   2. Responses are column-tables / nested objects with string-formatted numbers
+ *      ("+58.6%", "372.73 B"); parse via `parseNum`, not JSON-path-into-quote.USD.
  */
 
+/**
+ * Symbol → CoinMarketCap numeric id. The MCP quote/TA tools REQUIRE `id`; passing
+ * `symbol` returns "Required parameter is missing". Verified via tools/list +
+ * search_cryptos on the live Agent Hub. Extend this map if you widen WATCHLIST.
+ */
+export const CMC_ID: Readonly<Record<string, number>> = {
+  ETH: 1027,
+  CAKE: 7186,
+  LINK: 1975,
+  UNI: 7083,
+  AAVE: 7278,
+  FLOKI: 10804,
+  TWT: 5964,
+  PENDLE: 9481,
+  INJ: 7226,
+  FET: 3773,
+  USDT: 825,
+  USDC: 3408,
+};
+
 interface McpToolResult {
-  result?: { content?: Array<{ type: string; text?: string }> };
+  result?: { content?: Array<{ type: string; text?: string }>; isError?: boolean };
   error?: { message: string };
 }
 
@@ -36,21 +59,35 @@ function extractText(r: McpToolResult): string {
   if (r.error) throw new Error(`CMC MCP error: ${r.error.message}`);
   const text = r.result?.content?.find((c) => c.type === 'text')?.text;
   if (!text) throw new Error('CMC MCP: empty tool result');
+  // CMC reports tool-level failures (bad/missing params) with isError + an error string.
+  if (r.result?.isError) throw new Error(`CMC MCP tool error: ${text.slice(0, 200)}`);
   return text;
 }
 
-/** Shared response→domain mapping. CMC returns LLM-friendly text/JSON; parse defensively. */
+/** Shared response→domain mapping. CMC returns LLM-friendly tables/objects; parse defensively. */
 abstract class CmcBase implements MarketDataProvider {
   abstract readonly name: string;
   protected abstract call(tool: string, args: Record<string, unknown>): Promise<string>;
 
+  /** Resolve known symbols to a comma-joined id string for the `id`-keyed tools. */
+  private idsFor(symbols: string[]): string {
+    return symbols
+      .map((s) => CMC_ID[s.toUpperCase()])
+      .filter((id): id is number => id !== undefined)
+      .join(',');
+  }
+
   async quotes(symbols: string[]): Promise<TokenQuote[]> {
-    const text = await this.call('get_crypto_quotes_latest', { symbol: symbols.join(',') });
+    const ids = this.idsFor(symbols);
+    if (!ids) return symbols.map((s) => ({ symbol: s, priceUsd: 0, asOf: new Date().toISOString() }));
+    const text = await this.call('get_crypto_quotes_latest', { id: ids });
     return parseQuotes(text, symbols);
   }
 
   async technicals(symbol: string): Promise<TechnicalSnapshot> {
-    const text = await this.call('get_crypto_technical_analysis', { symbol });
+    const id = CMC_ID[symbol.toUpperCase()];
+    if (id === undefined) return { symbol, asOf: new Date().toISOString() };
+    const text = await this.call('get_crypto_technical_analysis', { id: String(id) });
     return parseTechnicals(text, symbol);
   }
 
@@ -98,104 +135,152 @@ export class CmcX402Data extends CmcBase {
   }
 
   protected async call(tool: string, args: Record<string, unknown>): Promise<string> {
-    // twak x402 request handles: 402 challenge -> sign EIP-3009/Permit2 -> retry.
-    // --prefer-network bsc keeps settlement on BSC; --yes auto-confirms within cap.
+    // twak x402 request handles: 402 challenge -> sign EIP-3009 -> retry.
+    // --prefer-network base: the endpoint's PREFERRED route is Base USDC via eip3009
+    // (gasless, no Permit2 approval), AND it keeps data fees off the BSC wallet whose
+    // value the competition scores (no PnL drag). max-payment 10000 = 0.01 USDC @ 6dp.
     const out = await this.twak.run<{ status?: number; body?: unknown } & Record<string, unknown>>([
       'x402', 'request', this.cfg.data.cmcX402Url,
       '--method', 'POST',
       '--body', JSON.stringify(mcpEnvelope(tool, args)),
       '--max-payment', this.cfg.data.x402MaxPaymentAtomic,
-      '--prefer-network', 'bsc',
+      '--prefer-network', 'base',
       '--yes',
     ]);
-    this.ledger.append('x402_payment', { tool, maxPaymentAtomic: this.cfg.data.x402MaxPaymentAtomic });
+    this.ledger.append('x402_payment', { tool, maxPaymentAtomic: this.cfg.data.x402MaxPaymentAtomic, network: 'base' });
     const body = (out.body ?? out) as McpToolResult;
     return extractText(body);
   }
 }
 
-// ---------- Defensive parsers (tighten on day 1 against real payloads) ----------
+// ---------- Parsers (pinned to the live CMC Agent Hub payloads, 2026-06-13) ----------
 
-function num(v: unknown): number | undefined {
-  const n = Number(v);
+/**
+ * CMC mixes raw numbers and formatted strings in the same payloads:
+ *   1.3464 | "45.53" | "+58.6%" | "0.00025896" | "372.73 B" | "2.19 T"
+ * Normalise all of them to a plain number (sign/percent stripped, K/M/B/T expanded).
+ */
+export function parseNum(v: unknown): number | undefined {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : undefined;
+  if (typeof v !== 'string') return undefined;
+  const s = v.trim().replace(/[+%,]/g, '');
+  const m = s.match(/^(-?\d*\.?\d+)\s*([KMBT])?$/i);
+  if (!m) {
+    const n = Number(s);
+    return Number.isFinite(n) ? n : undefined;
+  }
+  let n = Number(m[1]);
+  const mult: Record<string, number> = { K: 1e3, M: 1e6, B: 1e9, T: 1e12 };
+  if (m[2]) n *= mult[m[2].toUpperCase()] ?? 1;
   return Number.isFinite(n) ? n : undefined;
 }
 
+/**
+ * get_crypto_quotes_latest returns a column table:
+ *   { headers: ["id","name","symbol","slug","price",...,"percent_change_24h",...,"market_cap","volume_24h",...],
+ *     rows: [["7186","PancakeSwap","CAKE","pancakeswap",1.3464,...]] }
+ */
 export function parseQuotes(text: string, symbols: string[]): TokenQuote[] {
   const asOf = new Date().toISOString();
   try {
-    const j = JSON.parse(text) as Record<string, unknown>;
-    const data = (j.data ?? j) as Record<string, unknown>;
-    return symbols.map((s) => {
-      const entryRaw = data[s];
-      const entry = (Array.isArray(entryRaw) ? entryRaw[0] : entryRaw) as Record<string, unknown> | undefined;
-      const quoteUsd = ((entry?.quote as Record<string, unknown> | undefined)?.USD ?? entry) as
-        | Record<string, unknown>
-        | undefined;
-      return {
-        symbol: s,
-        priceUsd: num(quoteUsd?.price) ?? 0,
-        ...(num(quoteUsd?.percent_change_24h) !== undefined && { pctChange24h: num(quoteUsd?.percent_change_24h)! }),
-        ...(num(quoteUsd?.volume_24h) !== undefined && { volume24h: num(quoteUsd?.volume_24h)! }),
-        ...(num(quoteUsd?.market_cap) !== undefined && { marketCap: num(quoteUsd?.market_cap)! }),
-        asOf,
-      };
-    });
+    const j = JSON.parse(text) as { headers?: unknown; rows?: unknown };
+    const headers = j.headers as string[] | undefined;
+    const rows = j.rows as unknown[][] | undefined;
+    if (!Array.isArray(headers) || !Array.isArray(rows)) throw new Error('not a table');
+    const idx = {
+      sym: headers.indexOf('symbol'),
+      price: headers.indexOf('price'),
+      pct: headers.indexOf('percent_change_24h'),
+      vol: headers.indexOf('volume_24h'),
+      mc: headers.indexOf('market_cap'),
+    };
+    const bySym = new Map<string, TokenQuote>();
+    for (const row of rows) {
+      const symbol = String(row[idx.sym] ?? '').toUpperCase();
+      if (!symbol) continue;
+      const q: TokenQuote = { symbol, priceUsd: parseNum(row[idx.price]) ?? 0, asOf };
+      const pct = parseNum(row[idx.pct]);
+      if (pct !== undefined) q.pctChange24h = pct;
+      const vol = parseNum(row[idx.vol]);
+      if (vol !== undefined) q.volume24h = vol;
+      const mc = parseNum(row[idx.mc]);
+      if (mc !== undefined) q.marketCap = mc;
+      bySym.set(symbol, q);
+    }
+    // Preserve the requested order; surface a zero-price stub for anything missing.
+    return symbols.map((s) => bySym.get(s.toUpperCase()) ?? { symbol: s, priceUsd: 0, asOf });
   } catch {
     return symbols.map((s) => ({ symbol: s, priceUsd: 0, asOf }));
   }
 }
 
+/**
+ * get_crypto_technical_analysis returns:
+ *   { moving_averages:{ exponential_moving_average_30_day:"1.37", ..._200_day:"1.65", ... },
+ *     macd:{ macdLine:"-0.0426", signalLine:"-0.0473", histogram:"0.0047" },
+ *     rsi:{ rsi7, rsi14:"45.53", rsi21 }, fibonacciLevels, pivotPoint }
+ */
 export function parseTechnicals(text: string, symbol: string): TechnicalSnapshot {
   const asOf = new Date().toISOString();
   try {
-    const j = JSON.parse(text) as Record<string, unknown>;
-    const d = (j.data ?? j) as Record<string, unknown>;
-    const macd = d.macd as Record<string, unknown> | undefined;
-    return {
-      symbol,
-      ...(num(d.rsi ?? d.rsi14) !== undefined && { rsi14: num(d.rsi ?? d.rsi14)! }),
-      ...(macd && {
-        macd: {
-          value: num(macd.value) ?? 0,
-          signal: num(macd.signal) ?? 0,
-          histogram: num(macd.histogram) ?? 0,
-        },
-      }),
-      ...(num(d.ema20) !== undefined && { ema20: num(d.ema20)! }),
-      ...(num(d.ema50) !== undefined && { ema50: num(d.ema50)! }),
-      asOf,
-    };
+    const d = JSON.parse(text) as Record<string, any>;
+    const snap: TechnicalSnapshot = { symbol, asOf };
+    const rsi14 = parseNum(d?.rsi?.rsi14);
+    if (rsi14 !== undefined) snap.rsi14 = rsi14;
+    const m = d?.macd;
+    if (m) {
+      const value = parseNum(m.macdLine);
+      const signal = parseNum(m.signalLine);
+      const histogram = parseNum(m.histogram);
+      if (value !== undefined || signal !== undefined || histogram !== undefined) {
+        snap.macd = { value: value ?? 0, signal: signal ?? 0, histogram: histogram ?? 0 };
+      }
+    }
+    // CMC exposes 7/30/200-day EMAs. The domain type carries two slots; map the
+    // 30-day to the short slot (ema20) and 200-day to the long slot (ema50) so the
+    // strategist still sees a short-vs-long trend read. Values are LLM context only.
+    const ma = d?.moving_averages;
+    if (ma) {
+      const eShort = parseNum(ma.exponential_moving_average_30_day);
+      const eLong = parseNum(ma.exponential_moving_average_200_day);
+      if (eShort !== undefined) snap.ema20 = eShort;
+      if (eLong !== undefined) snap.ema50 = eLong;
+    }
+    return snap;
   } catch {
     return { symbol, asOf };
   }
 }
 
+/**
+ * get_global_metrics_latest: { sentiment:{ fear_greed:{ current:{ index } } },
+ *   rotation:{ altcoin_season:{ current:{ index } } }, dominance:{ btc:{ current:"+58.6%" } } }
+ * get_global_crypto_derivatives_metrics: { fundingRate:{ current:"0.00025896" },
+ *   totalOpenInterest:{ current:"372.73 B" } }
+ */
 export function parseGlobal(globalText: string, derivativesText: string): GlobalSnapshot {
   const asOf = new Date().toISOString();
   const out: GlobalSnapshot = { asOf };
   try {
-    const g = JSON.parse(globalText) as Record<string, unknown>;
-    const d = (g.data ?? g) as Record<string, unknown>;
-    const fg = num(d.fear_and_greed ?? d.fearGreed ?? (d.fear_greed as Record<string, unknown> | undefined)?.value);
+    const g = JSON.parse(globalText) as Record<string, any>;
+    const fg = parseNum(g?.sentiment?.fear_greed?.current?.index);
     if (fg !== undefined) out.fearGreed = fg;
-    const dom = num(d.btc_dominance ?? d.btcDominance);
-    if (dom !== undefined) out.btcDominance = dom;
-    const alt = num(d.altcoin_season ?? d.altcoinSeason);
+    const alt = parseNum(g?.rotation?.altcoin_season?.current?.index);
     if (alt !== undefined) out.altcoinSeason = alt;
+    const dom = parseNum(g?.dominance?.btc?.current);
+    if (dom !== undefined) out.btcDominance = dom;
   } catch {
-    /* keep defaults */
+    /* keep defaults — regime degrades gracefully */
   }
   if (derivativesText) {
     try {
-      const j = JSON.parse(derivativesText) as Record<string, unknown>;
-      const d = (j.data ?? j) as Record<string, unknown>;
-      const oi = num(d.open_interest_usd ?? d.openInterestUsd);
-      const fr = num(d.avg_funding_rate ?? d.avgFundingRate);
-      out.derivatives = {
-        ...(oi !== undefined && { aggOpenInterestUsd: oi }),
-        ...(fr !== undefined && { avgFundingRate: fr }),
-      };
+      const d = JSON.parse(derivativesText) as Record<string, any>;
+      const fr = parseNum(d?.fundingRate?.current);
+      const oi = parseNum(d?.totalOpenInterest?.current);
+      const deriv: { aggOpenInterestUsd?: number; avgFundingRate?: number } = {};
+      if (oi !== undefined) deriv.aggOpenInterestUsd = oi;
+      if (fr !== undefined) deriv.avgFundingRate = fr;
+      if (Object.keys(deriv).length) out.derivatives = deriv;
     } catch {
       /* sentiment thermometer unavailable — regime degrades gracefully */
     }

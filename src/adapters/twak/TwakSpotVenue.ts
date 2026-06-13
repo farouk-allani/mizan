@@ -70,32 +70,36 @@ export class TwakSpotVenue implements ExecutionVenue {
 }
 
 /**
- * Portfolio via twak. The CLI's portfolio output shape isn't pinned in the
- * skills reference, so this adapter is defensive: it accepts a few plausible
- * shapes and normalizes. Verify against `twak wallet portfolio --json` output
- * on day 1 and tighten.
+ * Portfolio via twak. Pinned against the live `twak wallet portfolio --json` (2026-06-13):
+ * the CLI returns a FLAT ARRAY of per-chain rows, not an object —
+ *   { chain, type: 'native'|'token', symbol, address, balance: "100", usdValue, contract? }
+ * spanning ~24 chains. We keep BSC token balances only (MIZAN trades and is scored on BSC)
+ * and exclude the native BNB gas reserve, which is not an in-scope asset and must never be
+ * flattened to USDT by the circuit breaker. Object shapes are tolerated as a fallback.
  */
 export class TwakPortfolioReader implements PortfolioReader {
   constructor(private readonly cli: TwakCli) {}
 
   async snapshot(): Promise<PortfolioSnapshot> {
-    const raw = await this.cli.run<Record<string, unknown>>(['wallet', 'portfolio']);
+    const raw = await this.cli.run<unknown>(['wallet', 'portfolio']);
     const asOf = new Date().toISOString();
 
-    const holdingsRaw =
-      (raw.holdings as unknown[]) ?? (raw.tokens as unknown[]) ?? (raw.assets as unknown[]) ?? [];
-    const holdings = holdingsRaw
-      .map((h) => {
-        const o = h as Record<string, unknown>;
-        return {
-          symbol: String(o.symbol ?? o.token ?? ''),
-          amount: Number(o.amount ?? o.balance ?? 0),
-          valueUsd: Number(o.valueUsd ?? o.usdValue ?? o.value ?? 0),
-        };
-      })
+    const obj = raw as Record<string, unknown>;
+    const rowsRaw: unknown[] = Array.isArray(raw)
+      ? raw
+      : (obj?.holdings as unknown[]) ?? (obj?.tokens as unknown[]) ?? (obj?.assets as unknown[]) ?? [];
+
+    const holdings = rowsRaw
+      .map((h) => h as Record<string, unknown>)
+      .filter((o) => String(o.chain ?? 'bsc').toLowerCase() === 'bsc' && String(o.type ?? 'token') !== 'native')
+      .map((o) => ({
+        symbol: String(o.symbol ?? o.token ?? ''),
+        amount: Number(o.balance ?? o.amount ?? 0),
+        valueUsd: Number(o.usdValue ?? o.valueUsd ?? o.value ?? 0),
+      }))
       .filter((h) => h.symbol);
 
-    const totalUsd = Number(raw.totalUsd ?? raw.totalValueUsd ?? raw.total ?? holdings.reduce((s, h) => s + h.valueUsd, 0));
+    const totalUsd = holdings.reduce((s, h) => s + h.valueUsd, 0);
     return { totalUsd, holdings, asOf };
   }
 }

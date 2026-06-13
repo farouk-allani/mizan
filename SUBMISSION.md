@@ -67,7 +67,10 @@ scam tokens) · 15%-of-equity per-trade clamp · max 12 trades/day · daily noti
 During the live week MIZAN's market data flows through CoinMarketCap's x402 MCP endpoint:
 **every Agent Hub call is paid 0.01 USDC from the agent's own wallet via
 `twak x402 request`, inside the trade loop**, with each payment recorded in the audit
-ledger. Two sponsor products literally transacting with each other — not a README mention.
+ledger. Settlement uses the endpoint's preferred route — **gasless EIP-3009 USDC on Base,
+signed locally by the same self-custody key that trades on BSC** — so the agent funds its
+own data without spending the BSC trading capital it is scored on, and with no separate gas
+token. Two sponsor products literally transacting with each other — not a README mention.
 
 ## CMC Agent Hub usage (special prize)
 
@@ -108,6 +111,10 @@ systemd-hardened VPS deployment · Telegram ops channel.
 
 ## Honest limitations
 
-Defensive parsers for twak portfolio / CMC payload shapes are pinned during preflight,
-not assumed; contract pins are verified per-symbol with `--quote-only` before live week;
-the x402 BSC settlement route is probed with `twak x402 quote` (Base USDC fallback).
+twak portfolio and CMC payload shapes are pinned against the live APIs, not assumed — the
+portfolio reader parses twak's flat multi-chain array (BSC tokens only, native gas
+excluded), and the CMC adapter keys on numeric IDs with table/nested parsers; every
+watchlist alt has a `--quote-only`-verified BSC contract pin. x402 settles on the
+endpoint's preferred gasless USDC-on-Base route, confirmed via `twak x402 quote`. The
+honest residual: one trading week is variance-dominated, so MIZAN is tuned to never breach
+the drawdown gate rather than to chase the top of the leaderboard.

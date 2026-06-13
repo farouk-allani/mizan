@@ -43,9 +43,20 @@ export const AMBIGUOUS_SYMBOLS: ReadonlySet<string> = new Set([
  *   2. Verify route: `twak swap 5 USDT <address> --chain bsc --quote-only --json`
  *   3. Pin it here. Sentinel allows ambiguous symbols only when pinned.
  */
+// Verified 2026-06-13: twak's swap router resolves only majors/stables (USDT, USDC, ETH,
+// BNB, WBNB) by symbol; every alt below returns TOKEN_NOT_FOUND unless given its BSC
+// contract. Each address here was confirmed with `twak swap USDT <addr> --chain bsc
+// --usd 5 --quote-only` returning the EXPECTED token symbol (routable + correct identity).
 export const CONTRACT_PINS: Readonly<Record<string, string>> = {
-  // CAKE — PancakeSwap (verify before live week):
-  // CAKE: '0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82',
+  CAKE: '0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82',
+  FLOKI: '0xfb5B838b6cfEEdC2873aB27866079AC55363D37E',
+  TWT: '0x4B0F1812e5Df2A09796481Ff14017e6005508003',
+  PENDLE: '0xb3Ed0A426155B79B898849803E3B36552f7ED507',
+  INJ: '0xa2B726B1145A4773F68593CF171187d8EBe4d495',
+  FET: '0x031b41e504677879370e9DBcF937283A8691Fa7f',
+  LINK: '0xF8A0BF9cF54Bb92F17374d9e9A321E6a111a51bD',
+  UNI: '0xBf5140A22578168FD562DCcF235E5D43A02ce9B1',
+  AAVE: '0xfb6115445Bff7b52FeB98650C87f44907E58f802',
 };
 
 export function isEligible(symbol: string): boolean {

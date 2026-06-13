@@ -15,7 +15,9 @@ venues:
     enabled: false     # reserved port; no adapter ships. See ARCHITECTURE.md §Venues.
 
 loop:
-  intervalMinutes: 15
+  intervalMinutes: 15             # paper: 15 is fine (apikey data is free). LIVE: raise to 60 —
+                                  # x402 costs 0.01 USDC/call, ~7 calls/cycle; 60-min ≈ $12/week,
+                                  # which fits a 20 USDC Base budget. 30-min ≈ $24 (over budget).
   killSwitchPath: ./KILL
 
 risk:

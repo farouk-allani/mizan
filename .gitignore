@@ -3,3 +3,5 @@ dist/
 data/
 .env
 KILL
+reveal-mnemonic.mjs
+RUNBOOK2.md

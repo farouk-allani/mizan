@@ -36,11 +36,26 @@ export class TwakCli {
     const pw = process.env[this.opts.walletPasswordEnv];
     if (pw) env.TWAK_WALLET_PASSWORD = pw;
 
+    // On Windows the global `twak` is a .cmd shim, and Node 22 refuses to spawn .cmd
+    // without a shell (EINVAL). We enable a shell on win32 only — but a shell mangles
+    // args containing spaces/quotes, so we refuse those loudly rather than risk
+    // mis-executing a real trade. The only such arg is x402's JSON --body, which runs
+    // live on the Linux VPS (shell off, fully safe). See RUNBOOK2 §8.
+    const isWin = process.platform === 'win32';
+    if (isWin && args.some((a) => /[\s"'^&|<>%]/.test(a))) {
+      throw new TwakError(
+        'twak call has shell-unsafe args; native Windows cannot run this safely (the twak.cmd ' +
+          'shim needs a shell). Run MIZAN on Linux / WSL / the VPS for live mode + x402.',
+        'WINDOWS_SHELL_UNSAFE',
+      );
+    }
+
     try {
       const { stdout } = await pExecFile(this.opts.bin, [...args, '--json'], {
         timeout: this.opts.timeoutMs,
         env,
         maxBuffer: 8 * 1024 * 1024,
+        shell: isWin,
       });
       const parsed = JSON.parse(stdout.trim()) as T & { error?: string; errorCode?: string };
       if (parsed && typeof parsed === 'object' && 'errorCode' in parsed && parsed.errorCode) {

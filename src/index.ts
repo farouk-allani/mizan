@@ -164,6 +164,11 @@ async function cycle(deps: {
     } else {
       await notifier.send(`🚫 Sentinel rejected ${proposal.fromSymbol}→${proposal.toSymbol}: ${verdict.reasons.join('; ')}`);
     }
+  } else {
+    // No trade this cycle (strategist held, or before the heartbeat hour). Surface it so
+    // paper/live trading is never silent — report regime, equity, and the hold decision.
+    ledger.append('proposal', { action: 'hold', regime: regime.regime, score: regime.score });
+    await notifier.send(`🔵 ${regime.regime} (${regime.score}) · equity $${portfolio.totalUsd.toFixed(2)} · holding — no trade this cycle`);
   }
 
   saveState(statePath, state);
