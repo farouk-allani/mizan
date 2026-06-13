@@ -1,0 +1,29 @@
+{
+  "name": "mizan",
+  "version": "0.1.0",
+  "description": "MIZAN — halal-compliant, sentinel-guarded autonomous spot trading agent on BNB Chain (TWAK + CMC Agent Hub + x402)",
+  "main": "index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "test": "tsc && node --test test/sentinel.test.mjs",
+    "verify-ledger": "node dist/verify-ledger.js",
+    "preflight": "bash scripts/preflight.sh",
+    "register": "bash scripts/register.sh"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "yaml": "^2.9.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.3",
+    "typescript": "^6.0.3"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -1,0 +1,22 @@
+# /etc/systemd/system/mizan.service — hardened unit for the VPS
+[Unit]
+Description=MIZAN autonomous spot trading agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mizan
+WorkingDirectory=/opt/mizan
+EnvironmentFile=/opt/mizan/.env
+ExecStart=/usr/bin/node dist/index.js
+Restart=always
+RestartSec=30
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/mizan/data /home/mizan/.twak
+PrivateTmp=true
+ProtectHome=read-only
+
+[Install]
+WantedBy=multi-user.target

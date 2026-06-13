@@ -1,0 +1,63 @@
+# MIZAN configuration — competition profile.
+# Post-hackathon: copy to config/personal.yaml, lower risk caps, point MIZAN_CONFIG at it.
+
+mode: paper            # paper | live  — flip to live ONLY after preflight.sh passes
+chain: bsc
+
+compliance:
+  halalMode: true      # spot-only invariant. Setting venues.perps.enabled=true while
+                       # this is true makes the config REFUSE TO LOAD.
+
+venues:
+  spot:
+    enabled: true      # TwakSpotVenue — sole execution layer (self-custody, local signing)
+  perps:
+    enabled: false     # reserved port; no adapter ships. See ARCHITECTURE.md §Venues.
+
+loop:
+  intervalMinutes: 15
+  killSwitchPath: ./KILL
+
+risk:
+  maxTradePctOfEquity: 0.15       # per-trade clamp
+  maxTradesPerDay: 12
+  maxDailyNotionalPctOfEquity: 1.0
+  maxDrawdownPct: 0.18            # flatten LONG before the ~30% disqualification gate
+  maxSlippagePct: 1.0
+  cooldownMinutes: 20
+  minPortfolioUsd: 25             # never approach the $1 dust rule
+  stableSymbol: USDT
+
+heartbeat:
+  enabled: true
+  deadlineUtcHour: 20             # if no trade by 20:00 UTC, fire the qualification trade
+  usdNotional: 5
+  toSymbol: CAKE
+
+data:
+  cmcTransport: apikey            # apikey (build window) | x402 (live week — pays per call)
+  cmcMcpUrl: https://mcp.coinmarketcap.com/mcp
+  cmcX402Url: https://mcp.coinmarketcap.com/x402/mcp
+  x402MaxPaymentAtomic: "10000"   # 0.01 USDC @ 6dp per call
+
+llm:
+  enabled: true
+  baseUrl: https://token-plan-sgp.xiaomimimo.com/v1   # any OpenAI-compatible endpoint (MiMo works too)
+  model: mimo-v2.5-pro
+  apiKeyEnv: LLM_API_KEY
+  temperature: 0.2
+
+notify:
+  telegram:
+    enabled: true
+    botTokenEnv: TELEGRAM_BOT_TOKEN
+    chatIdEnv: TELEGRAM_CHAT_ID
+
+twak:
+  bin: twak
+  walletPasswordEnv: TWAK_WALLET_PASSWORD
+  timeoutMs: 180000
+
+paths:
+  ledger: ./data/ledger.jsonl
+  state: ./data/state.json

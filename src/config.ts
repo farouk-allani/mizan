@@ -1,0 +1,128 @@
+import { readFileSync } from 'node:fs';
+import { z } from 'zod';
+import YAML from 'yaml';
+
+/**
+ * MIZAN configuration.
+ *
+ * Design intent: *compliance and risk are config-load-time invariants*, not
+ * runtime opinions. If `compliance.halalMode` is true, the perps venue cannot
+ * be enabled — the config simply refuses to load. The LLM never sees a world
+ * in which derivatives are an option.
+ */
+
+const VenueToggle = z.object({
+  enabled: z.boolean(),
+});
+
+export const ConfigSchema = z
+  .object({
+    mode: z.enum(['paper', 'live']).default('paper'),
+    chain: z.literal('bsc').default('bsc'),
+
+    compliance: z.object({
+      /** Spot-only, no leverage, no interest-bearing instruments. */
+      halalMode: z.boolean().default(true),
+    }),
+
+    venues: z.object({
+      spot: VenueToggle, // TwakSpotVenue
+      perps: VenueToggle, // reserved — no implementation ships; see ARCHITECTURE.md
+    }),
+
+    loop: z.object({
+      intervalMinutes: z.number().int().min(1).max(240).default(15),
+      /** Stop file: if this path exists, the loop exits before the next cycle. */
+      killSwitchPath: z.string().default('./KILL'),
+    }),
+
+    risk: z.object({
+      /** Hard cap per trade as a fraction of current equity. */
+      maxTradePctOfEquity: z.number().min(0.001).max(0.5).default(0.15),
+      maxTradesPerDay: z.number().int().min(1).default(12),
+      maxDailyNotionalPctOfEquity: z.number().min(0.01).max(3).default(1.0),
+      /**
+       * Soft circuit breaker: flatten to stable WELL BEFORE the competition's
+       * disqualification threshold (~30%). Disqualification is the only
+       * unrecoverable outcome.
+       */
+      maxDrawdownPct: z.number().min(0.05).max(0.29).default(0.18),
+      maxSlippagePct: z.number().min(0.1).max(5).default(1.0),
+      cooldownMinutes: z.number().int().min(0).default(20),
+      /** Never let portfolio approach the $1 dust rule. */
+      minPortfolioUsd: z.number().min(1).default(25),
+      /** Symbol the breaker flattens into. Must be in the allowlist. */
+      stableSymbol: z.string().default('USDT'),
+    }),
+
+    heartbeat: z.object({
+      /** Competition requires >= 1 trade/day. Fire a tiny stable<->stable-adjacent
+       *  rotation if nothing traded by this UTC hour. */
+      enabled: z.boolean().default(true),
+      deadlineUtcHour: z.number().int().min(0).max(23).default(20),
+      usdNotional: z.number().min(1).default(5),
+      toSymbol: z.string().default('CAKE'),
+    }),
+
+    data: z.object({
+      /** 'apikey' (dev, free tier) | 'x402' (live week — pays per call, scores the prize). */
+      cmcTransport: z.enum(['apikey', 'x402']).default('apikey'),
+      cmcMcpUrl: z.string().url().default('https://mcp.coinmarketcap.com/mcp'),
+      cmcX402Url: z.string().url().default('https://mcp.coinmarketcap.com/x402/mcp'),
+      /** Max x402 payment per call, atomic units (USDC 6dp): 0.01 USDC = "10000". */
+      x402MaxPaymentAtomic: z.string().regex(/^\d+$/).default('10000'),
+    }),
+
+    llm: z.object({
+      enabled: z.boolean().default(true),
+      /** OpenAI-compatible endpoint — works with OpenRouter, MiMo, etc. */
+      baseUrl: z.string().url(),
+      model: z.string(),
+      apiKeyEnv: z.string().default('LLM_API_KEY'),
+      temperature: z.number().min(0).max(1).default(0.2),
+    }),
+
+    notify: z.object({
+      telegram: z.object({
+        enabled: z.boolean().default(false),
+        botTokenEnv: z.string().default('TELEGRAM_BOT_TOKEN'),
+        chatIdEnv: z.string().default('TELEGRAM_CHAT_ID'),
+      }),
+    }),
+
+    twak: z.object({
+      bin: z.string().default('twak'),
+      walletPasswordEnv: z.string().default('TWAK_WALLET_PASSWORD'),
+      timeoutMs: z.number().int().default(180_000),
+    }),
+
+    paths: z.object({
+      ledger: z.string().default('./data/ledger.jsonl'),
+      state: z.string().default('./data/state.json'),
+    }),
+  })
+  .superRefine((cfg, ctx) => {
+    if (cfg.compliance.halalMode && cfg.venues.perps.enabled) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['venues', 'perps', 'enabled'],
+        message:
+          'compliance.halalMode=true forbids enabling the perps venue. ' +
+          'This is a load-time invariant, not a runtime check.',
+      });
+    }
+    if (!cfg.venues.spot.enabled) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['venues', 'spot', 'enabled'],
+        message: 'At least the spot venue must be enabled.',
+      });
+    }
+  });
+
+export type Config = z.infer<typeof ConfigSchema>;
+
+export function loadConfig(path = process.env.MIZAN_CONFIG ?? './config/default.yaml'): Config {
+  const raw = YAML.parse(readFileSync(path, 'utf8'));
+  return ConfigSchema.parse(raw);
+}
