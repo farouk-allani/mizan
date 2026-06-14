@@ -23,7 +23,7 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 export IDENTITY_WALLET_PASSWORD='<strong password>'
 # Host agent-card.json publicly (GitHub raw is fine), then:
-export AGENT_CARD_URL='https://raw.githubusercontent.com/<you>/mizan/main/identity/agent-card.json'
+export AGENT_CARD_URL='https://raw.githubusercontent.com/farouk-allani/mizan/main/identity/agent-card.json'
 python register_identity.py
 ```
 

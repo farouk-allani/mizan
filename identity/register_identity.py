@@ -40,7 +40,7 @@ AGENT_DESCRIPTION = (
 # Host identity/agent-card.json somewhere public (GitHub raw works) and point here:
 AGENT_CARD_URL = os.environ.get(
     "AGENT_CARD_URL",
-    "https://raw.githubusercontent.com/<you>/mizan/main/identity/agent-card.json",
+    "https://raw.githubusercontent.com/farouk-allani/mizan/main/identity/agent-card.json",
 )
 
 

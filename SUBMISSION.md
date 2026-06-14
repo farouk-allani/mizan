@@ -6,7 +6,9 @@
 
 **Agent wallet (BSC):** `0xCa3077EB13c10D844aCE8f5992c692073b5C5c81`
 **Registration tx:** `0xfb05463bc15ce293089b157d315aa766b74879cac6ba69bc4af0bc8d61c106cc` ([BscScan](https://bscscan.com/tx/0xfb05463bc15ce293089b157d315aa766b74879cac6ba69bc4af0bc8d61c106cc))
-**Repo:** `<GitHub URL>` · **Demo video:** `<link>` · **ERC-8004 identity (BSC testnet):** agentId `<id>`, tx `<hash>`
+**Repo:** https://github.com/farouk-allani/mizan
+**Demo video:** https://www.youtube.com/watch?v=KnvOTW_CUL8
+**ERC-8004 identity (BSC testnet):** agentId `1391`, tx `0xafc8eee5506179148687d3692d0e45c733ca07eb5f742c2837ecd61e3fb3f0e6`, identity wallet `0x3141789d9D515Ec21530A0D69E91f5234995018E`
 
 ---
 

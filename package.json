@@ -1,7 +1,7 @@
 {
   "name": "mizan",
   "version": "0.1.0",
-  "description": "MIZAN — halal-compliant, sentinel-guarded autonomous spot trading agent on BNB Chain (TWAK + CMC Agent Hub + x402)",
+  "description": "MIZAN - halal-compliant, sentinel-guarded autonomous spot trading agent on BNB Chain (TWAK + CMC Agent Hub + x402)",
   "main": "index.js",
   "scripts": {
     "build": "tsc",
@@ -25,5 +25,10 @@
   "type": "module",
   "engines": {
     "node": ">=20"
+  },
+  "homepage": "https://github.com/farouk-allani/mizan",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/farouk-allani/mizan.git"
   }
 }

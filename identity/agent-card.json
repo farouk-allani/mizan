@@ -3,7 +3,7 @@
   "description": "MIZAN — halal-compliant, sentinel-guarded autonomous spot trading agent on BNB Chain (BNB Hack: AI Trading Agent Edition, Track 1).",
   "version": "0.1.0",
   "protocolVersion": "0.3.0",
-  "url": "https://github.com/<you>/mizan",
+  "url": "https://github.com/farouk-allani/mizan",
   "capabilities": {
     "trading": { "venues": ["bsc-spot-dex-via-twak"], "custody": "self-custody-local-signing", "derivatives": false },
     "data": ["coinmarketcap-agent-hub-mcp", "x402-pay-per-call"],
