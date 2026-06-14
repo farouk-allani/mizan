@@ -6,7 +6,7 @@
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "tsc && node --test test/sentinel.test.mjs",
+    "test": "tsc && node --test test/sentinel.test.mjs test/strategist.test.mjs",
     "verify-ledger": "node dist/verify-ledger.js",
     "preflight": "bash scripts/preflight.sh",
     "register": "bash scripts/register.sh"

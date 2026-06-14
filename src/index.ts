@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs';
 import { loadDotenv } from './env.js';
 import { loadConfig, type Config } from './config.js';
-import { detectRegime, strategistPropose } from './core/strategist.js';
+import { detectRegime, rulesFallbackPropose, strategistPropose } from './core/strategist.js';
 import { rollState, sentinelValidate } from './core/sentinel.js';
 import { Ledger, loadState, saveState } from './core/ledger.js';
 import type { AgentState, PortfolioSnapshot, TradeProposal } from './core/types.js';
@@ -157,6 +157,14 @@ async function cycle(deps: {
       ledger.append('error', { where: 'strategist', message: String(e) });
       return null;
     });
+  }
+
+  // --- Active spot fallback ---
+  // If the LLM holds or errors, use a conservative deterministic momentum rule so the
+  // agent is not passive all day. Sentinel still validates before any quote/signing.
+  if (!proposal) {
+    proposal = rulesFallbackPropose(cfg, { regime, quotes, technicals, portfolio });
+    if (proposal) ledger.append('rules_fallback', proposal);
   }
 
   // --- Heartbeat: guarantee >= 1 trade/day (competition qualification) ---

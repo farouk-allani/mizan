@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { Config } from '../config.js';
-import type { GlobalSnapshot, RegimeReading, TechnicalSnapshot, TokenQuote, TradeProposal } from './types.js';
+import type { GlobalSnapshot, PortfolioSnapshot, RegimeReading, TechnicalSnapshot, TokenQuote, TradeProposal } from './types.js';
 import type { LlmClient } from '../ports/index.js';
 import { COMPETITION_ALLOWLIST } from '../tokens/allowlist.js';
 
@@ -94,5 +94,98 @@ export async function strategistPropose(
     usdNotional: parsed.usdNotional,
     rationale: parsed.rationale,
     source: 'strategist_llm',
+  };
+}
+
+// ---------- Deterministic active fallback ----------
+
+const STABLES = new Set(['USDT', 'USDC', 'DAI', 'TUSD', 'FDUSD', 'USD1', 'USDE', 'USDD', 'FRAX', 'LISUSD', 'USDF', 'FRXUSD']);
+const ALLOWLIST_SYMBOLS = new Set([...COMPETITION_ALLOWLIST].map((s) => s.toUpperCase()));
+
+function heldUsd(portfolio: PortfolioSnapshot, symbol: string): number {
+  return portfolio.holdings.find((h) => h.symbol.toUpperCase() === symbol.toUpperCase())?.valueUsd ?? 0;
+}
+
+function technicalScore(t?: TechnicalSnapshot): number {
+  if (!t) return 0;
+  let score = 0;
+  if (t.rsi14 !== undefined) {
+    if (t.rsi14 >= 45 && t.rsi14 <= 72) score += 1.5;
+    else if (t.rsi14 > 78) score -= 2;
+    else if (t.rsi14 < 35) score -= 1;
+  }
+  if (t.macd) score += t.macd.histogram > 0 ? 2 : -1;
+  if (t.ema20 !== undefined && t.ema50 !== undefined) score += t.ema20 > t.ema50 ? 1 : -1;
+  return score;
+}
+
+function bestMomentum(quotes: TokenQuote[], technicals: TechnicalSnapshot[], stableSymbol: string) {
+  const techBySymbol = new Map(technicals.map((t) => [t.symbol.toUpperCase(), t]));
+  return quotes
+    .filter((q) => q.priceUsd > 0)
+    .filter((q) => q.symbol.toUpperCase() !== stableSymbol.toUpperCase())
+    .filter((q) => !STABLES.has(q.symbol.toUpperCase()))
+    .filter((q) => ALLOWLIST_SYMBOLS.has(q.symbol.toUpperCase()))
+    .map((q) => {
+      const pct24h = q.pctChange24h ?? 0;
+      return {
+        quote: q,
+        pct24h,
+        score: pct24h + technicalScore(techBySymbol.get(q.symbol.toUpperCase())),
+      };
+    })
+    .sort((a, b) => b.score - a.score)[0];
+}
+
+/**
+ * Conservative rules fallback for the competition profile. It only runs after the LLM
+ * declines to trade, so paper/live mode keeps moving without making the model the only
+ * source of initiative. Sentinel still validates every proposal before any quote/signing.
+ */
+export function rulesFallbackPropose(
+  cfg: Config,
+  ctx: {
+    regime: RegimeReading;
+    quotes: TokenQuote[];
+    technicals: TechnicalSnapshot[];
+    portfolio: PortfolioSnapshot;
+  },
+): TradeProposal | null {
+  const stable = cfg.risk.stableSymbol;
+  const equity = ctx.portfolio.totalUsd;
+  const stableUsd = heldUsd(ctx.portfolio, stable);
+  const candidate = bestMomentum(ctx.quotes, ctx.technicals, stable);
+  if (!candidate || stableUsd < 1 || equity < cfg.risk.minPortfolioUsd) return null;
+
+  const perTradeCap = equity * cfg.risk.maxTradePctOfEquity;
+  let fractionOfCap: number;
+  let minScore: number;
+  let reason: string;
+
+  if (ctx.regime.regime === 'risk_on') {
+    fractionOfCap = 0.8;
+    minScore = -2;
+    reason = 'risk-on fallback: deploy spot capital into strongest allowlist momentum';
+  } else if (ctx.regime.regime === 'neutral') {
+    fractionOfCap = 0.45;
+    minScore = 1;
+    reason = 'neutral fallback: small spot rotation into strongest allowlist momentum';
+  } else {
+    fractionOfCap = 0.3;
+    minScore = 0;
+    reason = 'risk-off fallback: tiny probe only into relative-strength allowlist token';
+  }
+
+  if (candidate.score < minScore) return null;
+  const notional = Math.min(perTradeCap * fractionOfCap, stableUsd * 0.98);
+  if (notional < 1) return null;
+
+  return {
+    kind: 'swap',
+    fromSymbol: stable,
+    toSymbol: candidate.quote.symbol,
+    usdNotional: Number(notional.toFixed(2)),
+    rationale: `${reason}; picked ${candidate.quote.symbol} (24h ${candidate.pct24h.toFixed(2)}%, score ${candidate.score.toFixed(2)})`,
+    source: 'rules',
   };
 }

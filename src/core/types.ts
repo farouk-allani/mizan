@@ -102,6 +102,7 @@ export interface LedgerEntry {
     | 'execution'
     | 'circuit_breaker'
     | 'heartbeat'
+    | 'rules_fallback'
     | 'error'
     | 'x402_payment'
     | 'automation';
