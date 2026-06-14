@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="./assets/mizan-logo.png" alt="MIZAN balance-scale logo mark" width="260">
+</p>
+
 # MIZAN ⚖️
 
 **Halal-compliant, sentinel-guarded autonomous spot trading agent on BNB Chain.**
