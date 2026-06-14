@@ -5,7 +5,7 @@
 > Keys never leave the machine.
 
 **Agent wallet (BSC):** `0xCa3077EB13c10D844aCE8f5992c692073b5C5c81`
-**Registration tx:** `<PASTE hash from twak compete register>` ([BscScan](<explorer link>))
+**Registration tx:** `0xfb05463bc15ce293089b157d315aa766b74879cac6ba69bc4af0bc8d61c106cc` ([BscScan](https://bscscan.com/tx/0xfb05463bc15ce293089b157d315aa766b74879cac6ba69bc4af0bc8d61c106cc))
 **Repo:** `<GitHub URL>` · **Demo video:** `<link>` · **ERC-8004 identity (BSC testnet):** agentId `<id>`, tx `<hash>`
 
 ---
@@ -67,20 +67,22 @@ scam tokens) · 15%-of-equity per-trade clamp · max 12 trades/day · daily noti
 
 ## Native x402 — the agent funds its own data
 
-During the live week MIZAN's market data flows through CoinMarketCap's x402 MCP endpoint:
-**every Agent Hub call is paid 0.01 USDC from the agent's own wallet via
-`twak x402 request`, inside the trade loop**, with each payment recorded in the audit
-ledger. Settlement uses the endpoint's preferred route — **gasless EIP-3009 USDC on Base,
+During the live week MIZAN's paid market data uses CoinMarketCap's x402 REST surface:
+**each paid CMC REST call is funded by the agent's own wallet via `twak x402 request`,
+inside the trade loop**, with each successful payment recorded in the audit ledger.
+Settlement uses the endpoint's preferred route — **gasless EIP-3009 USDC on Base,
 signed locally by the same self-custody key that trades on BSC** — so the agent funds its
 own data without spending the BSC trading capital it is scored on, and with no separate gas
-token. Two sponsor products literally transacting with each other — not a README mention.
+token. The MCP x402 endpoint itself is not called by TWAK 0.19.1 because it requires the
+Streamable HTTP `Accept: application/json, text/event-stream` header that TWAK cannot
+currently add.
 
 ## CMC Agent Hub usage (special prize)
 
-Quotes, technical analysis (RSI/MACD/EMA), global metrics (Fear & Greed, BTC dominance,
-altcoin season), and derivatives positioning — consumed via MCP through both transports
-(API-key for the build window, x402 for live trading), fused into the deterministic
-regime engine rather than pasted into a prompt.
+In build-window mode, MIZAN consumes CMC Agent Hub MCP tools for quotes, technical
+analysis, global metrics, and derivatives positioning. In live x402 mode, TWAK pays CMC's
+REST x402 quotes/listings endpoints; quotes feed the strategist directly, and listings
+derive a paid breadth/dominance proxy for the deterministic regime engine.
 
 ## BNB AI Agent SDK usage (special prize)
 

@@ -34,10 +34,9 @@ for SYM in "${!PINS[@]}"; do
     && pass "route OK: USDT->$SYM (${PINS[$SYM]:0:10}…)" || echo "⚠️  no route USDT->$SYM — re-verify pin in allowlist.ts"
 done
 
-# x402: preview what CMC charges (read-only, no signing)
-twak x402 quote https://mcp.coinmarketcap.com/x402/mcp --method POST \
-  --body "{\"jsonrpc\":\"2.0\",\"id\":\"pf\",\"method\":\"tools/call\",\"params\":{\"name\":\"get_global_metrics_latest\",\"arguments\":{}}}" \
-  --json >/dev/null 2>&1 && pass "x402 challenge reachable" || echo "⚠️  x402 quote failed — verify endpoint before live week"
+# x402: preview what CMC charges (read-only, no signing) on the REST x402 path.
+twak x402 quote 'https://pro-api.coinmarketcap.com/x402/v3/cryptocurrency/quotes/latest?id=1027' \
+  --json >/dev/null 2>&1 && pass "x402 REST challenge reachable" || echo "⚠️  x402 REST quote failed — verify endpoint before live week"
 
 node dist/verify-ledger.js ./data/ledger.jsonl || true
 echo "—— preflight complete ——"

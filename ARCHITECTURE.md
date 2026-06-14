@@ -38,7 +38,7 @@ modify a rule.
 |---|---|---|
 | Execution | `TwakSpotVenue` — sole venue; twak CLI, `--json`, local keystore signing | TWAK integration depth (30), self-custody (25) |
 | Guardrails | `sentinel.ts` — 10 pure rules: allowlist, ambiguity pins, per-trade clamp, daily caps, cooldown, drawdown breaker, dust floor | Autonomous execution & guardrails (20) |
-| Data | CMC Agent Hub MCP; **x402 transport pays 0.01 USDC per call from the agent's own wallet via `twak x402 request`** | Native x402 (10) |
+| Data | CMC Agent Hub MCP for API-key mode; **live x402 pays CMC REST quotes/listings from the agent's own wallet via `twak x402 request`** | Native x402 (10) |
 | Identity | (optional module) ERC-8004 registration via `bnbagent` on BSC testnet | Best Use of BNB AI Agent SDK ($2k special) |
 | Audit | Hash-chained JSONL ledger, `npm run verify-ledger` | Demo & on-chain proof (5) |
 | Compliance | `halalMode` load-time invariant | Originality / real-world relevance (10) |
@@ -132,5 +132,5 @@ your capital, your rules.
 - Pin CMC MCP tool result payload shapes (parsers are defensive for now).
 - Populate `CONTRACT_PINS` for every symbol the strategy can touch; run
   `scripts/preflight.sh` route checks.
-- Confirm the x402 MCP endpoint's challenge offers a BSC settlement route
-  (`twak x402 quote …`); fall back to Base USDC settlement if not.
+- Confirm the CMC REST x402 quote endpoint is reachable with `twak x402 quote`;
+  live settlement uses gasless Base USDC.

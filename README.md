@@ -5,7 +5,7 @@ Built for *BNB Hack: AI Trading Agent Edition* (Track 1) — CoinMarketCap × Tr
 
 - 🔐 **Self-custody only** — Trust Wallet Agent Kit (TWAK) local BIP39 signing; no key ever leaves the machine, no custodial path exists in the code.
 - 🛡️ **Sentinel-guarded** — the LLM proposes, a pure deterministic guardrail layer disposes: 149-token allowlist, per-trade & daily caps, cooldowns, an 18% drawdown circuit breaker (vs the 30% disqualification gate), and a dust floor.
-- 💸 **Native x402** — the agent pays 0.01 USDC per CMC Agent Hub data call from its own wallet, inside the trade loop.
+- 💸 **Native x402** — in live mode the agent pays CMC REST x402 data calls from its own wallet, inside the trade loop.
 - ☪️ **Halal by invariant** — `compliance.halalMode: true` makes enabling any derivatives venue a *config parse error*, not a runtime opinion. Spot only. Always.
 - 🧾 **Tamper-evident audit** — every decision hash-chains into `data/ledger.jsonl`; verify with `npm run verify-ledger`.
 

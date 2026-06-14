@@ -68,7 +68,15 @@ export const ConfigSchema = z
       /** 'apikey' (dev, free tier) | 'x402' (live week — pays per call, scores the prize). */
       cmcTransport: z.enum(['apikey', 'x402']).default('apikey'),
       cmcMcpUrl: z.string().url().default('https://mcp.coinmarketcap.com/mcp'),
+      /** MCP x402 endpoint kept for manual diagnostics; TWAK live mode uses cmcX402RestBase. */
       cmcX402Url: z.string().url().default('https://mcp.coinmarketcap.com/x402/mcp'),
+      /**
+       * REST x402 base, used by the LIVE transport. The MCP x402 endpoint can't be used
+       * from twak (MCP-over-HTTP requires an `Accept: …text/event-stream` header twak
+       * doesn't send → HTTP 400); CMC's plain REST x402 resources have no such requirement
+       * and work with `twak x402 request`. Settles on Base USDC.
+       */
+      cmcX402RestBase: z.string().url().default('https://pro-api.coinmarketcap.com/x402'),
       /** Max x402 payment per call, atomic units (USDC 6dp): 0.01 USDC = "10000". */
       x402MaxPaymentAtomic: z.string().regex(/^\d+$/).default('10000'),
     }),

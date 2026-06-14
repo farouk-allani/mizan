@@ -6,15 +6,15 @@ import { TwakCli } from '../twak/cli.js';
 import type { Ledger } from '../../core/ledger.js';
 
 /**
- * CMC Agent Hub data, two transports behind one port:
+ * CMC market data, two transports behind one port:
  *
  *  - CmcApiKeyData : direct MCP-over-HTTP with X-CMC-MCP-API-KEY (free tier; dev/build window)
- *  - CmcX402Data   : the SAME MCP tools via mcp.coinmarketcap.com/x402/mcp, paid 0.01 USDC
- *                    per call THROUGH twak's x402 client — the agent funds its own data
- *                    inside the trade loop (TWAK prize, "native x402" criterion).
+ *  - CmcX402Data   : paid CoinMarketCap x402 REST endpoints via twak x402 request.
+ *                    TWAK 0.19.1 cannot add the MCP Streamable HTTP Accept header
+ *                    required by /x402/mcp, so live x402 uses REST resources.
  *
- * Both speak MCP JSON-RPC `tools/call` over streamable HTTP. Tool names AND payload
- * shapes verified against the live Agent Hub (2026-06-13). Two facts the API enforces
+ * MCP tool names AND payload shapes verified against the live Agent Hub (2026-06-13).
+ * Two facts the API enforces
  * that earlier drafts got wrong, pinned here:
  *   1. Quote/technical tools key on numeric `id`, NOT `symbol` (see CMC_ID below).
  *   2. Responses are column-tables / nested objects with string-formatted numbers
@@ -62,6 +62,105 @@ function extractText(r: McpToolResult): string {
   // CMC reports tool-level failures (bad/missing params) with isError + an error string.
   if (r.result?.isError) throw new Error(`CMC MCP tool error: ${text.slice(0, 200)}`);
   return text;
+}
+
+type JsonRecord = Record<string, unknown>;
+
+interface CmcRestEnvelope {
+  status?: {
+    timestamp?: string;
+    error_code?: number;
+    error_message?: string | null;
+  };
+  data?: unknown;
+}
+
+function asRecord(v: unknown): JsonRecord | undefined {
+  return v && typeof v === 'object' && !Array.isArray(v) ? (v as JsonRecord) : undefined;
+}
+
+function cmcRestUrl(base: string, path: string, params: Record<string, string>): string {
+  const root = base.replace(/\/+$/, '');
+  const suffix = path.replace(/^\/+/, '');
+  const query = Object.entries(params)
+    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v).replace(/%2C/gi, ',')}`)
+    .join('&');
+  return query ? `${root}/${suffix}?${query}` : `${root}/${suffix}`;
+}
+
+function unwrapCmcRest(r: unknown): unknown {
+  const env = asRecord(r) as CmcRestEnvelope | undefined;
+  if (!env) throw new Error('CMC x402 REST: non-object response');
+  const code = env.status?.error_code;
+  if (code !== undefined && code !== 0) {
+    throw new Error(`CMC x402 REST error ${code}: ${env.status?.error_message ?? 'unknown error'}`);
+  }
+  if (env.data === undefined) throw new Error('CMC x402 REST: missing data');
+  return env.data;
+}
+
+function quoteUsd(row: JsonRecord): JsonRecord {
+  const quote = asRecord(row.quote);
+  const usd = quote ? asRecord(quote.USD) : undefined;
+  return usd ?? {};
+}
+
+function restQuoteRows(data: unknown): JsonRecord[] {
+  const rows = Array.isArray(data) ? data : Object.values(asRecord(data) ?? {});
+  return rows.flatMap((r) => {
+    const row = asRecord(r);
+    if (!row) return [];
+    const usd = quoteUsd(row);
+    return [{
+      id: row.id,
+      name: row.name,
+      symbol: row.symbol,
+      price: usd.price,
+      percent_change_1h: usd.percent_change_1h,
+      percent_change_24h: usd.percent_change_24h,
+      percent_change_7d: usd.percent_change_7d,
+      percent_change_30d: usd.percent_change_30d,
+      volume_24h: usd.volume_24h,
+      market_cap: usd.market_cap,
+      last_updated: usd.last_updated,
+    }];
+  });
+}
+
+function listingsGlobalProxy(data: unknown): JsonRecord {
+  const rows = restQuoteRows(data);
+  const stable = new Set(['USDT', 'USDC', 'DAI', 'FDUSD', 'TUSD', 'USDE', 'USDD']);
+  const btc = rows.find((r) => String(r.symbol ?? '').toUpperCase() === 'BTC');
+  const btcChange = parseNum(btc?.percent_change_24h);
+  const totalMarketCap = rows.reduce((sum, r) => sum + (parseNum(r.market_cap) ?? 0), 0);
+  const btcMarketCap = parseNum(btc?.market_cap);
+
+  let outperformers = 0;
+  let eligible = 0;
+  if (btcChange !== undefined) {
+    for (const r of rows) {
+      const sym = String(r.symbol ?? '').toUpperCase();
+      if (!sym || sym === 'BTC' || stable.has(sym)) continue;
+      const change = parseNum(r.percent_change_24h);
+      if (change === undefined) continue;
+      eligible += 1;
+      if (change > btcChange) outperformers += 1;
+    }
+  }
+
+  const altBreadth = eligible > 0 ? Math.round((outperformers / eligible) * 100) : undefined;
+  const out: JsonRecord = {
+    source: 'cmc_x402_listings_latest_proxy',
+    rotation: {},
+    dominance: {},
+  };
+  if (altBreadth !== undefined) {
+    out.rotation = { altcoin_season: { current: { index: altBreadth } } };
+  }
+  if (btcMarketCap !== undefined && totalMarketCap > 0) {
+    out.dominance = { btc: { current: `${((btcMarketCap / totalMarketCap) * 100).toFixed(2)}%` } };
+  }
+  return out;
 }
 
 /** Shared response→domain mapping. CMC returns LLM-friendly tables/objects; parse defensively. */
@@ -144,7 +243,7 @@ export class CmcApiKeyData extends CmcBase {
 }
 
 export class CmcX402Data extends CmcBase {
-  readonly name = 'cmc-mcp-x402';
+  readonly name = 'cmc-x402-rest';
   constructor(
     private readonly cfg: Config,
     private readonly twak: TwakCli,
@@ -153,33 +252,56 @@ export class CmcX402Data extends CmcBase {
     super(ledger);
   }
 
-  protected async call(tool: string, args: Record<string, unknown>): Promise<string> {
-    // twak x402 request handles: 402 challenge -> sign EIP-3009 -> retry.
-    // --prefer-network base: the endpoint's PREFERRED route is Base USDC via eip3009
-    // (gasless, no Permit2 approval), AND it keeps data fees off the BSC wallet whose
-    // value the competition scores (no PnL drag). max-payment 10000 = 0.01 USDC @ 6dp.
-    const out = await this.twak.run<{ status?: number; body?: unknown } & Record<string, unknown>>([
-      'x402', 'request', this.cfg.data.cmcX402Url,
-      '--method', 'POST',
-      '--body', JSON.stringify(mcpEnvelope(tool, args)),
+  private async paidGet(path: string, params: Record<string, string>, tool: string): Promise<unknown> {
+    const url = cmcRestUrl(this.cfg.data.cmcX402RestBase, path, params);
+    const out = await this.twak.run<unknown>([
+      'x402', 'request', url,
       '--max-payment', this.cfg.data.x402MaxPaymentAtomic,
       '--prefer-network', 'base',
       '--yes',
     ]);
-    // Record the ACTUAL payment proof twak surfaces (settlement id, tx, amount paid,
-    // status) — the "native x402" evidence judges check, not just our request params.
-    const proof: Record<string, unknown> = { tool, maxPaymentAtomic: this.cfg.data.x402MaxPaymentAtomic, network: 'base' };
-    if (out && typeof out === 'object') {
-      for (const k of [
-        'status', 'statusCode', 'paymentId', 'payment', 'settlement', 'txHash', 'transaction',
-        'transactionHash', 'amountPaid', 'asset', 'payTo', 'receipt', 'paymentResponse', 'xPaymentResponse',
-      ]) {
-        if (k in out && out[k] !== undefined) proof[k] = out[k];
-      }
+    const status = asRecord(out)?.status;
+    this.ledger?.append('x402_payment', {
+      tool,
+      transport: 'cmc-rest-x402',
+      endpoint: path,
+      maxPaymentAtomic: this.cfg.data.x402MaxPaymentAtomic,
+      network: 'base',
+      ...(status ? { status } : {}),
+    });
+    return unwrapCmcRest(out);
+  }
+
+  async technicals(symbol: string): Promise<TechnicalSnapshot> {
+    return { symbol, asOf: new Date().toISOString() };
+  }
+
+  protected async call(tool: string, args: Record<string, unknown>): Promise<string> {
+    if (tool === 'get_crypto_quotes_latest') {
+      const id = String(args.id ?? '');
+      const data = await this.paidGet('/v3/cryptocurrency/quotes/latest', {
+        id,
+      }, tool);
+      return JSON.stringify(restQuoteRows(data));
     }
-    this.ledger?.append('x402_payment', proof);
-    const body = (out.body ?? out) as McpToolResult;
-    return extractText(body);
+
+    if (tool === 'get_global_metrics_latest') {
+      const data = await this.paidGet('/v3/cryptocurrency/listings/latest', {}, tool);
+      return JSON.stringify(listingsGlobalProxy(data));
+    }
+
+    if (tool === 'get_crypto_technical_analysis') {
+      // CMC's documented x402 REST endpoints do not expose the MCP technical-analysis
+      // tool. Return an empty technical payload rather than inventing RSI/MACD.
+      return JSON.stringify({});
+    }
+
+    if (tool === 'get_global_crypto_derivatives_metrics') {
+      // No x402 REST equivalent today. Derivatives are advisory only and optional.
+      return JSON.stringify({});
+    }
+
+    throw new Error(`CMC x402 REST: unsupported MCP tool mapping: ${tool}`);
   }
 }
 

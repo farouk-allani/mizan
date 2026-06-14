@@ -16,8 +16,8 @@ venues:
 
 loop:
   intervalMinutes: 15             # paper: 15 is fine (apikey data is free). LIVE: raise to 60 —
-                                  # x402 costs 0.01 USDC/call, ~7 calls/cycle; 60-min ≈ $12/week,
-                                  # which fits a 20 USDC Base budget. 30-min ≈ $24 (over budget).
+                                  # x402 costs 0.01 USDC/call, ~2 paid REST calls/cycle; 60-min ≈ $3.40/week,
+                                  # leaving room inside a 20 USDC Base budget.
   killSwitchPath: ./KILL
 
 risk:
@@ -39,7 +39,9 @@ heartbeat:
 data:
   cmcTransport: apikey            # apikey (build window) | x402 (live week — pays per call)
   cmcMcpUrl: https://mcp.coinmarketcap.com/mcp
+  # Diagnostic only: TWAK live mode uses cmcX402RestBase, not this MCP x402 URL.
   cmcX402Url: https://mcp.coinmarketcap.com/x402/mcp
+  cmcX402RestBase: https://pro-api.coinmarketcap.com/x402
   x402MaxPaymentAtomic: "10000"   # 0.01 USDC @ 6dp per call
 
 llm:
