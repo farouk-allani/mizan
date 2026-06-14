@@ -16,10 +16,22 @@ echo "→ BSC address:"; twak wallet address --chain bsc --json
 # Competition registration window + status
 twak compete status --json || fail "compete status failed"
 
-# Route sanity: every strategy symbol must quote on BSC
-for SYM in CAKE FLOKI TWT PENDLE; do
-  twak swap 5 USDT "$SYM" --chain bsc --quote-only --json >/dev/null 2>&1 \
-    && pass "route OK: USDT->$SYM" || echo "⚠️  no route USDT->$SYM (remove from WATCHLIST or pin contract)"
+# Route sanity: twak's router rejects bare alt symbols (TOKEN_NOT_FOUND), so quote each
+# alt by its PINNED BSC contract — mirror of CONTRACT_PINS in src/tokens/allowlist.ts.
+declare -A PINS=(
+  [CAKE]=0x0E09FaBB73Bd3Ade0a17ECC321fD13a19e81cE82
+  [FLOKI]=0xfb5B838b6cfEEdC2873aB27866079AC55363D37E
+  [TWT]=0x4B0F1812e5Df2A09796481Ff14017e6005508003
+  [PENDLE]=0xb3Ed0A426155B79B898849803E3B36552f7ED507
+  [INJ]=0xa2B726B1145A4773F68593CF171187d8EBe4d495
+  [FET]=0x031b41e504677879370e9DBcF937283A8691Fa7f
+  [LINK]=0xF8A0BF9cF54Bb92F17374d9e9A321E6a111a51bD
+  [UNI]=0xBf5140A22578168FD562DCcF235E5D43A02ce9B1
+  [AAVE]=0xfb6115445Bff7b52FeB98650C87f44907E58f802
+)
+for SYM in "${!PINS[@]}"; do
+  twak swap USDT "${PINS[$SYM]}" --chain bsc --usd 5 --quote-only --json >/dev/null 2>&1 \
+    && pass "route OK: USDT->$SYM (${PINS[$SYM]:0:10}…)" || echo "⚠️  no route USDT->$SYM — re-verify pin in allowlist.ts"
 done
 
 # x402: preview what CMC charges (read-only, no signing)

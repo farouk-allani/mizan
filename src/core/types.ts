@@ -103,7 +103,8 @@ export interface LedgerEntry {
     | 'circuit_breaker'
     | 'heartbeat'
     | 'error'
-    | 'x402_payment';
+    | 'x402_payment'
+    | 'automation';
   payload: unknown;
   /** Hash-chain: sha256 of (prevHash + canonical(payload)). Tamper-evident audit trail. */
   prevHash: string;

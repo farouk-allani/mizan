@@ -1,7 +1,7 @@
 import type { Config } from '../../config.js';
 import type { ExecutionResult, PortfolioSnapshot, TradeProposal } from '../../core/types.js';
 import type { ExecutionVenue, PortfolioReader } from '../../ports/index.js';
-import { tradableIdentifier } from '../../tokens/allowlist.js';
+import { COMPETITION_ALLOWLIST, tradableIdentifier } from '../../tokens/allowlist.js';
 import { TwakCli, TwakError, type SwapExecOut, type SwapQuoteOut } from './cli.js';
 
 /**
@@ -97,7 +97,10 @@ export class TwakPortfolioReader implements PortfolioReader {
         amount: Number(o.balance ?? o.amount ?? 0),
         valueUsd: Number(o.usdValue ?? o.valueUsd ?? o.value ?? 0),
       }))
-      .filter((h) => h.symbol);
+      // Count ONLY competition-eligible assets toward equity. A priced scam-airdrop on BSC
+      // would otherwise inflate equity and distort the per-trade cap, daily cap, and the
+      // drawdown breaker. This also keeps internal equity aligned with the scored portfolio.
+      .filter((h) => h.symbol && COMPETITION_ALLOWLIST.has(h.symbol));
 
     const totalUsd = holdings.reduce((s, h) => s + h.valueUsd, 0);
     return { totalUsd, holdings, asOf };

@@ -37,8 +37,9 @@ ever runs.
 2. **Risk-on:** rotate into the strongest momentum names on the 149-token BSC allowlist
    (CAKE, FLOKI, TWT, PENDLE, INJ, FET, …), confirmed by RSI/MACD from CMC's technical
    analysis tools. Per-trade size is clamped to 15% of equity.
-3. **Risk-off:** rotate toward USDT and wait. A daily heartbeat trade (~$5) keeps us
-   qualified under the 1-trade/day minimum without taking risk.
+3. **Risk-off:** rotate toward USDT and wait. A daily `twak automate` DCA (~$5, executed
+   by `twak watch`) keeps us qualified under the 1-trade/day minimum without taking risk;
+   an in-loop backstop fires only if the automation hasn't run that day.
 4. **Exits:** sentiment divergence (social heat rising while momentum rolls over)
    prompts de-risking proposals; the cooldown timer prevents overtrading chop.
 5. **Tournament logic:** most entrants either breach the ~30% drawdown gate (disqualified)
@@ -58,8 +59,10 @@ scam tokens) · 15%-of-equity per-trade clamp · max 12 trades/day · daily noti
 
 - **TWAK is the sole execution layer.** Surfaces used: agent wallet (local BIP39
   keystore, on-device signing), `twak swap` with quote-first discipline and slippage
-  caps, `twak automate` (DCA heartbeat), `twak compete` (on-chain registration), and
-  `twak x402` (see below). No custodial component exists anywhere in the flow.
+  caps, **`twak automate`** (a real on-wallet daily DCA automation created at boot and
+  executed by `twak watch` — the autonomous qualification trade, not an in-process timer),
+  `twak compete` (on-chain registration), and `twak x402` (see below). No custodial
+  component exists anywhere in the flow.
 - The wallet password reaches twak only via env/OS-keychain — never argv.
 
 ## Native x402 — the agent funds its own data

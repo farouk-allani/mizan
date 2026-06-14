@@ -85,8 +85,9 @@ by prompt injection, or by LLM creativity.
   `risk_on | neutral | risk_off`.
 - `risk_on`: rotate up to 15%/trade into strongest momentum names on the BSC allowlist
   (CAKE, FLOKI, TWT, PENDLE, INJ, FET…), RSI/MACD-confirmed via CMC TA tools.
-- `risk_off`: rotate toward USDT; the heartbeat still fires one small trade/day to stay
-  qualified (≥1 trade/day rule = 7 over the week).
+- `risk_off`: rotate toward USDT; a daily `twak automate` DCA (executed by `twak watch`)
+  fires one small trade/day to stay qualified (≥1 trade/day rule = 7 over the week), with
+  an in-loop backstop if the automation hasn't run that day.
 - Sentiment-divergence exit: social heat up while momentum rolls over ⇒ strategist is
   prompted to propose de-risking.
 - Tournament logic: most entrants either blow the 30% gate or hide in stables at ~0%.

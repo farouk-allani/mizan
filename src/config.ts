@@ -99,6 +99,8 @@ export const ConfigSchema = z
     paths: z.object({
       ledger: z.string().default('./data/ledger.jsonl'),
       state: z.string().default('./data/state.json'),
+      /** Virtual portfolio for paper mode (PnL simulation). Delete the file to reset PnL. */
+      paperBook: z.string().default('./data/paper-book.json'),
     }),
   })
   .superRefine((cfg, ctx) => {
