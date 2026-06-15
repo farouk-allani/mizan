@@ -30,20 +30,30 @@ ever runs.
 
 ## Strategy (as required by the rules: how we achieve our results)
 
-**Regime-aware spot momentum rotation, tournament-tuned.**
+**Regime-aware momentum with a let-winners-run position engine — offense and defense split.**
+
+The strategy is one coherent policy, not a model toggling buy/sell each cycle. It answers
+*"what should we be holding, and is a better option worth the ~1% round-trip cost?"* — then
+holds until that answer changes.
 
 1. **Regime detection (deterministic, no LLM):** a composite of CMC Fear & Greed,
    aggregate derivatives funding rate, and the Altcoin Season index classifies each
    cycle as `risk_on / neutral / risk_off`. Derivatives data is read strictly as a
    *sentiment thermometer* — MIZAN never trades derivatives (see Compliance).
-2. **Risk-on:** rotate into the strongest momentum names on the 149-token BSC allowlist
-   (CAKE, FLOKI, TWT, PENDLE, INJ, FET, …), confirmed by RSI/MACD from CMC's technical
-   analysis tools. Per-trade size is clamped to 15% of equity.
-3. **Risk-off:** rotate toward USDT and wait. A daily `twak automate` DCA (~$5, executed
-   by `twak watch`) keeps us qualified under the 1-trade/day minimum without taking risk;
-   an in-loop backstop fires only if the automation hasn't run that day.
-4. **Exits:** sentiment divergence (social heat rising while momentum rolls over)
-   prompts de-risking proposals; the cooldown timer prevents overtrading chop.
+2. **Offense (entries & rotations):** in `risk_on`/`neutral` the LLM strategist proposes
+   deploying into the strongest momentum names on the 149-token BSC allowlist (CAKE, FLOKI,
+   TWT, PENDLE, INJ, FET, …), confirmed by RSI/MACD on the cycle's top movers. Capital scales
+   toward a concentrated-but-clamped volatile target; we **rotate only when a candidate beats
+   the held token by a margin sized to cover the round-trip cost** — never between near-ties.
+   A deterministic target-allocation engine drives the same policy whenever the LLM holds.
+3. **Defense (exits, deterministic):** a per-position **trailing stop** locks in trend gains,
+   a **trend-break** rule (MACD rolling over below the EMA cross) and a **regime flip to
+   risk_off** flatten to USDT. Protective exits are exempt from the anti-churn timers so
+   capital preservation never waits. A let-winners-run guard suppresses any discretionary LLM
+   sell of a healthy holding — defense owns that call.
+4. **Qualification:** a daily `twak automate` DCA (~$5, executed by `twak watch`) keeps us
+   qualified under the 1-trade/day minimum; an in-loop backstop fires only if the automation
+   hasn't run that day.
 5. **Tournament logic:** most entrants either breach the ~30% drawdown gate (disqualified)
    or hide in stables (~0%). The winning region is *concentrated-but-clamped* risk with a
    hard 18% auto-flatten — we can lose a battle, we cannot lose the war. Disqualification
@@ -51,11 +61,13 @@ ever runs.
 
 ## The Sentinel (guardrails)
 
-Ten pure rules, 100% unit-tested: competition allowlist on both legs · ambiguous-symbol
+Eleven pure rules, 100% unit-tested: competition allowlist on both legs · ambiguous-symbol
 contract pinning (single-letter tickers like B/H/M/Q/U are how agents donate money to
-scam tokens) · 15%-of-equity per-trade clamp · max 12 trades/day · daily notional cap ·
-20-min cooldown · **18% drawdown circuit breaker → flatten to USDT** · $25 dust floor
-(the $1/hour rule never threatens us) · no self-swaps · source-of-funds verification.
+scam tokens) · 25%-of-equity per-trade clamp (concentrated entries) · max 6 trades/day ·
+daily notional cap · 45-min cooldown · minimum-hold anti-roundtrip rule · **18% drawdown
+circuit breaker → flatten to USDT** · $25 dust floor (the $1/hour rule never threatens us) ·
+no self-swaps · source-of-funds verification. The breaker **and** deterministic protective
+exits (`risk_exit`) are exempt from the anti-churn timers and daily caps — preservation first.
 
 ## Self-custody integrity (TWAK special prize)
 

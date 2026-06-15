@@ -15,13 +15,14 @@ import { tradableIdentifier } from '../tokens/allowlist.js';
  *  1. Allowlist        — both legs in the 149-token competition list
  *  2. Ambiguity        — collision-prone symbols require pinned contracts
  *  3. Per-trade cap    — notional <= maxTradePctOfEquity * equity (clamped, not rejected)
- *  4. Daily trade cap  — maxTradesPerDay
- *  5. Daily notional   — maxDailyNotionalPctOfEquity * equity
- *  6. Cooldown         — minimum minutes between trades (heartbeat exempt)
- *  7. Drawdown breaker — equity below HWM*(1-maxDrawdownPct) => only flatten allowed
- *  8. Dust floor       — post-trade portfolio must stay above minPortfolioUsd
- *  9. Self-swap        — from != to
- * 10. Positive notional
+ *  4. Daily trade cap  — maxTradesPerDay (breaker & risk_exit exempt)
+ *  5. Daily notional   — maxDailyNotionalPctOfEquity * equity (breaker & risk_exit exempt)
+ *  6. Cooldown         — minimum minutes between trades (heartbeat, breaker & risk_exit exempt)
+ *  7. Min hold window  — blocks rapid reversal of the last pair (breaker & risk_exit exempt)
+ *  8. Drawdown breaker — equity below HWM*(1-maxDrawdownPct) => only flatten allowed
+ *  9. Dust floor       — post-trade portfolio must stay above minPortfolioUsd
+ * 10. Self-swap        — from != to
+ * 11. Positive notional
  */
 export function sentinelValidate(
   proposal: TradeProposal,
@@ -34,10 +35,14 @@ export function sentinelValidate(
   const equity = portfolio.totalUsd;
   const isBreakerFlatten = proposal.source === 'circuit_breaker';
   const isHeartbeat = proposal.source === 'heartbeat';
+  // A deterministic protective exit (trailing stop / trend break / risk_off de-risk) preserves
+  // capital, so it is exempt from the anti-churn timers and daily caps — like the breaker.
+  const exitExempt = isBreakerFlatten || proposal.source === 'risk_exit';
+  const minsSinceLastTrade = state.lastTradeAt ? (now.getTime() - new Date(state.lastTradeAt).getTime()) / 60_000 : undefined;
 
-  // 10. sanity
+  // 11. sanity
   if (!(proposal.usdNotional > 0)) reasons.push('notional must be > 0');
-  // 9. self-swap
+  // 10. self-swap
   if (proposal.fromSymbol === proposal.toSymbol) reasons.push('from == to');
 
   // 1 + 2. allowlist & ambiguity (both legs)
@@ -46,7 +51,7 @@ export function sentinelValidate(
     if (!t.ok) reasons.push(t.reason);
   }
 
-  // 7. drawdown circuit breaker
+  // 8. drawdown circuit breaker
   const drawdown = state.equityHighWaterUsd > 0 ? 1 - equity / state.equityHighWaterUsd : 0;
   const breakerActive = drawdown >= cfg.risk.maxDrawdownPct || !!state.circuitBreakerTrippedAt;
   if (breakerActive && !isBreakerFlatten) {
@@ -55,17 +60,32 @@ export function sentinelValidate(
     );
   }
 
-  // 4. daily trade count (breaker flatten always allowed)
-  if (!isBreakerFlatten && state.tradesToday >= cfg.risk.maxTradesPerDay) {
+  // 4. daily trade count (breaker flatten & protective exit always allowed)
+  if (!exitExempt && state.tradesToday >= cfg.risk.maxTradesPerDay) {
     reasons.push(`daily trade cap reached (${state.tradesToday}/${cfg.risk.maxTradesPerDay})`);
   }
 
-  // 6. cooldown (heartbeat & breaker exempt — heartbeat is the qualification trade)
-  if (!isBreakerFlatten && !isHeartbeat && state.lastTradeAt) {
-    const minsSince = (now.getTime() - new Date(state.lastTradeAt).getTime()) / 60_000;
-    if (minsSince < cfg.risk.cooldownMinutes) {
-      reasons.push(`cooldown: ${minsSince.toFixed(0)}m since last trade < ${cfg.risk.cooldownMinutes}m`);
+  // 6. cooldown (heartbeat, breaker & protective exit exempt)
+  if (!exitExempt && !isHeartbeat && minsSinceLastTrade !== undefined && Number.isFinite(minsSinceLastTrade)) {
+    if (minsSinceLastTrade < cfg.risk.cooldownMinutes) {
+      reasons.push(`cooldown: ${minsSinceLastTrade.toFixed(0)}m since last trade < ${cfg.risk.cooldownMinutes}m`);
     }
+  }
+
+  // 7. minimum hold window: prevent fee-burning stable<->alt round trips.
+  if (
+    !exitExempt &&
+    minsSinceLastTrade !== undefined &&
+    Number.isFinite(minsSinceLastTrade) &&
+    state.lastTradeFromSymbol &&
+    state.lastTradeToSymbol &&
+    proposal.fromSymbol.toUpperCase() === state.lastTradeToSymbol.toUpperCase() &&
+    proposal.toSymbol.toUpperCase() === state.lastTradeFromSymbol.toUpperCase() &&
+    minsSinceLastTrade < cfg.risk.minHoldMinutes
+  ) {
+    reasons.push(
+      `minimum hold: ${minsSinceLastTrade.toFixed(0)}m since ${state.lastTradeFromSymbol}->${state.lastTradeToSymbol} < ${cfg.risk.minHoldMinutes}m`,
+    );
   }
 
   // 3. per-trade cap — clamp rather than reject
@@ -75,14 +95,14 @@ export function sentinelValidate(
   // 5. daily notional cap
   const dailyCapUsd = equity * cfg.risk.maxDailyNotionalPctOfEquity;
   const remainingToday = Math.max(0, dailyCapUsd - state.notionalTodayUsd);
-  if (!isBreakerFlatten) {
+  if (!exitExempt) {
     if (remainingToday <= 0) {
       reasons.push(`daily notional cap exhausted (${state.notionalTodayUsd.toFixed(0)}/${dailyCapUsd.toFixed(0)} USD)`);
     }
     effectiveNotional = Math.min(effectiveNotional, remainingToday);
   }
 
-  // 8. dust floor — a full-balance swap that fails partially must never strand us near $1
+  // 9. dust floor — a full-balance swap that fails partially must never strand us near $1
   if (equity - 0 < cfg.risk.minPortfolioUsd) {
     reasons.push(`portfolio ${equity.toFixed(2)} USD below safety floor ${cfg.risk.minPortfolioUsd} USD`);
   }

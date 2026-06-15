@@ -69,6 +69,7 @@ It enforces:
 - Per-trade position sizing.
 - Daily trade and notional caps.
 - Cooldown between trades.
+- Minimum-hold anti-roundtrip protection.
 - Source-of-funds checks.
 - Dust-floor protection.
 - 18 percent drawdown circuit breaker.

@@ -37,10 +37,10 @@ export const ConfigSchema = z
     }),
 
     risk: z.object({
-      /** Hard cap per trade as a fraction of current equity. */
-      maxTradePctOfEquity: z.number().min(0.001).max(0.5).default(0.15),
-      maxTradesPerDay: z.number().int().min(1).default(12),
-      maxDailyNotionalPctOfEquity: z.number().min(0.01).max(3).default(1.0),
+      /** Hard cap per trade as a fraction of current equity (enables concentrated entries). */
+      maxTradePctOfEquity: z.number().min(0.001).max(0.5).default(0.25),
+      maxTradesPerDay: z.number().int().min(1).default(6),
+      maxDailyNotionalPctOfEquity: z.number().min(0.01).max(3).default(0.8),
       /**
        * Soft circuit breaker: flatten to stable WELL BEFORE the competition's
        * disqualification threshold (~30%). Disqualification is the only
@@ -48,7 +48,23 @@ export const ConfigSchema = z
        */
       maxDrawdownPct: z.number().min(0.05).max(0.29).default(0.18),
       maxSlippagePct: z.number().min(0.1).max(5).default(1.0),
-      cooldownMinutes: z.number().int().min(0).default(20),
+      cooldownMinutes: z.number().int().min(0).default(45),
+      /** Minimum time before reversing the previous pair (discretionary trades only — a
+       *  protective `risk_exit` is exempt, like the breaker). */
+      minHoldMinutes: z.number().int().min(0).default(90),
+      /**
+       * DEFENSE: trailing stop. Exit the held position once its mark falls this fraction
+       * below the peak seen since entry. The core let-winners-run protection.
+       */
+      trailingStopPct: z.number().min(0.01).max(0.5).default(0.08),
+      /**
+       * OFFENSE anti-churn: only rotate the held token into a different one when the new
+       * candidate's momentum+technical score beats the held score by more than this margin
+       * (sized to cover the ~1% round-trip cost). Prevents flip-flopping between near-ties.
+       */
+      switchMarginScore: z.number().min(0).default(4),
+      /** Target ceiling on total volatile exposure — "concentrated but clamped". */
+      maxVolatilePctOfEquity: z.number().min(0.05).max(1).default(0.6),
       /** Never let portfolio approach the $1 dust rule. */
       minPortfolioUsd: z.number().min(1).default(25),
       /** Symbol the breaker flattens into. Must be in the allowlist. */

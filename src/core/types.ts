@@ -65,8 +65,13 @@ export interface TradeProposal {
   usdNotional: number;
   /** Free-text rationale — goes to the audit ledger and Telegram, never to execution. */
   rationale: string;
-  /** Which subsystem proposed it. */
-  source: 'strategist_llm' | 'rules' | 'heartbeat' | 'circuit_breaker';
+  /**
+   * Which subsystem proposed it.
+   * - `risk_exit` is a DETERMINISTIC protective exit (trailing stop / trend break / regime
+   *   flip to risk_off). Like the breaker it owns capital preservation, so the Sentinel
+   *   exempts it from the anti-churn timers (cooldown, min-hold) and the daily trade cap.
+   */
+  source: 'strategist_llm' | 'rules' | 'heartbeat' | 'circuit_breaker' | 'risk_exit';
 }
 
 export interface SentinelVerdict {
@@ -120,6 +125,20 @@ export interface AgentState {
   notionalTodayUsd: number;
   dayKey: string; // YYYY-MM-DD (UTC)
   lastTradeAt?: string;
+  lastTradeFromSymbol?: string;
+  lastTradeToSymbol?: string;
+  lastTradeSource?: TradeProposal['source'];
   circuitBreakerTrippedAt?: string;
   flattened: boolean;
+  /**
+   * Open-position memory for the let-winners-run engine. Tracks the single dominant
+   * volatile holding so the strategy can hold it, scale into it, and trail-stop it.
+   * Derived from the portfolio each cycle (see `syncPosition`), not hand-maintained.
+   */
+  positionSymbol?: string;
+  /** Mark price when the position was first observed (cost-basis proxy). */
+  positionEntryPriceUsd?: number;
+  /** Highest mark price seen since entry — the trailing-stop reference. */
+  positionPeakPriceUsd?: number;
+  positionEntryAt?: string;
 }

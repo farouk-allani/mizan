@@ -1,7 +1,16 @@
 import { existsSync } from 'node:fs';
 import { loadDotenv } from './env.js';
 import { loadConfig, type Config } from './config.js';
-import { detectRegime, rulesFallbackPropose, strategistPropose } from './core/strategist.js';
+import {
+  detectRegime,
+  evaluateExit,
+  findPosition,
+  isStable,
+  reconcileLlmProposal,
+  rulesFallbackPropose,
+  strategistPropose,
+  syncPosition,
+} from './core/strategist.js';
 import { rollState, sentinelValidate } from './core/sentinel.js';
 import { Ledger, loadState, saveState } from './core/ledger.js';
 import type { AgentState, PortfolioSnapshot, TradeProposal } from './core/types.js';
@@ -17,6 +26,32 @@ import { ConsoleNotifier, OpenAICompatLlm, TelegramNotifier } from './adapters/l
 const WATCHLIST = ['CAKE', 'FLOKI', 'TWT', 'PENDLE', 'INJ', 'FET', 'LINK', 'UNI', 'AAVE', 'ETH'];
 
 const formatPnl = (pct: number): string => `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`;
+
+function minutesSince(iso: string, now = new Date()): number | null {
+  const mins = (now.getTime() - new Date(iso).getTime()) / 60_000;
+  return Number.isFinite(mins) ? mins : null;
+}
+
+function normalTradingPauseReason(state: AgentState, portfolio: PortfolioSnapshot, cfg: Config, now = new Date()): string | null {
+  if (state.tradesToday >= cfg.risk.maxTradesPerDay) {
+    return `daily trade cap reached (${state.tradesToday}/${cfg.risk.maxTradesPerDay})`;
+  }
+
+  const dailyCapUsd = portfolio.totalUsd * cfg.risk.maxDailyNotionalPctOfEquity;
+  if (state.notionalTodayUsd >= dailyCapUsd) {
+    return `daily notional cap reached (${state.notionalTodayUsd.toFixed(2)}/${dailyCapUsd.toFixed(2)} USD)`;
+  }
+
+  if (state.lastTradeAt) {
+    const mins = minutesSince(state.lastTradeAt, now);
+    if (mins !== null && mins < cfg.risk.cooldownMinutes) {
+      const remaining = Math.ceil(cfg.risk.cooldownMinutes - mins);
+      return `cooldown active (${mins.toFixed(0)}m since last trade, ${remaining}m remaining)`;
+    }
+  }
+
+  return null;
+}
 
 function buildVenue(cfg: Config, cli: TwakCli): ExecutionVenue {
   // Venue registry. Spot is the only implementation that ships.
@@ -68,6 +103,9 @@ async function settle(proposal: TradeProposal, ctx: SettleCtx, state: AgentState
       tradesToday: state.tradesToday + 1,
       notionalTodayUsd: state.notionalTodayUsd + proposal.usdNotional,
       lastTradeAt: new Date().toISOString(),
+      lastTradeFromSymbol: proposal.fromSymbol,
+      lastTradeToSymbol: proposal.toSymbol,
+      lastTradeSource: proposal.source,
     };
   }
 
@@ -83,6 +121,9 @@ async function settle(proposal: TradeProposal, ctx: SettleCtx, state: AgentState
       tradesToday: state.tradesToday + 1,
       notionalTodayUsd: state.notionalTodayUsd + proposal.usdNotional,
       lastTradeAt: new Date().toISOString(),
+      lastTradeFromSymbol: proposal.fromSymbol,
+      lastTradeToSymbol: proposal.toSymbol,
+      lastTradeSource: proposal.source,
     };
   }
   await ctx.notifier.send(`❌ Swap failed [${r.errorCode}]: ${r.error}`);
@@ -141,30 +182,64 @@ async function cycle(deps: {
     return;
   }
 
-  // --- Data + regime (deterministic) ---
-  const [global, quotes] = await Promise.all([data.global(), data.quotes(WATCHLIST)]);
-  const technicals = await Promise.all(WATCHLIST.slice(0, 4).map((s) => data.technicals(s)));
-  const regime = detectRegime(global);
-  ledger.append('data', { global, quotes: quotes.length, technicals: technicals.length });
-  ledger.append('regime', regime);
-
-  // --- Strategist proposal (LLM proposes, never executes) ---
-  let proposal: TradeProposal | null = null;
-  if (cfg.llm.enabled) {
-    const llm = new OpenAICompatLlm(cfg);
-    const holdingsSummary = portfolio.holdings.map((h) => `${h.symbol}:$${h.valueUsd.toFixed(0)}`).join(' ');
-    proposal = await strategistPropose(llm, cfg, { regime, quotes, technicals, holdingsSummary }).catch((e) => {
-      ledger.append('error', { where: 'strategist', message: String(e) });
-      return null;
-    });
+  // Are we holding a volatile position? If flat, nothing needs protecting, so an active
+  // cooldown/daily-cap lets us skip the paid data fetch entirely (x402 thrift). If we DO
+  // hold, we always fetch and run the deterministic exit check — protective exits never wait.
+  const holdsVolatile = portfolio.holdings.some((h) => !isStable(h.symbol) && h.valueUsd > 1);
+  const pauseReason = normalTradingPauseReason(state, portfolio, cfg);
+  if (!holdsVolatile && pauseReason) {
+    ledger.append('proposal', { action: 'hold', reason: pauseReason });
+    await notifier.send(`⏸ trading paused: ${pauseReason} · equity $${portfolio.totalUsd.toFixed(2)}${pnlNote}`);
+    saveState(statePath, state);
+    return;
   }
 
-  // --- Active spot fallback ---
-  // If the LLM holds or errors, use a conservative deterministic momentum rule so the
-  // agent is not passive all day. Sentinel still validates before any quote/signing.
-  if (!proposal) {
-    proposal = rulesFallbackPropose(cfg, { regime, quotes, technicals, portfolio });
-    if (proposal) ledger.append('rules_fallback', proposal);
+  // --- Data + regime (deterministic) ---
+  // One quotes call covers the whole watchlist; spend the per-symbol technicals budget on the
+  // tokens that actually matter — the strongest movers plus whatever we currently hold.
+  const [global, quotes] = await Promise.all([data.global(), data.quotes(WATCHLIST)]);
+  const ranked = [...quotes].sort((a, b) => (b.pctChange24h ?? 0) - (a.pctChange24h ?? 0)).map((q) => q.symbol);
+  const heldSymbol = portfolio.holdings.filter((h) => !isStable(h.symbol) && h.valueUsd > 1).sort((a, b) => b.valueUsd - a.valueUsd)[0]?.symbol;
+  const techSymbols = [...new Set([...(heldSymbol ? [heldSymbol] : []), ...ranked].filter((s) => WATCHLIST.includes(s)))].slice(0, 4);
+  const technicals = await Promise.all(techSymbols.map((s) => data.technicals(s)));
+  const regime = detectRegime(global);
+  ledger.append('data', { global, quotes: quotes.length, technicals: technicals.length, techSymbols });
+  ledger.append('regime', regime);
+
+  // Position memory (entry/peak) synced from portfolio truth — drives trailing stop & scale-in.
+  state = syncPosition(state, portfolio, quotes, cfg);
+
+  // --- DEFENSE: deterministic protective exit (cooldown/min-hold exempt) ---
+  let proposal: TradeProposal | null = evaluateExit(cfg, { regime, quotes, technicals, portfolio, state });
+
+  // --- OFFENSE: new entries / rotations only when not paused (cooldown/daily caps clear) ---
+  if (!proposal && !pauseReason) {
+    if (cfg.llm.enabled) {
+      const llm = new OpenAICompatLlm(cfg);
+      const holdingsSummary = portfolio.holdings.map((h) => `${h.symbol}:$${h.valueUsd.toFixed(0)}`).join(' ');
+      const llmProposal = await strategistPropose(llm, cfg, {
+        regime,
+        quotes,
+        technicals,
+        holdingsSummary,
+        state,
+        ...(deps.paperBook ? { paperPnlPct: deps.paperBook.pnlPct(portfolio.totalUsd) } : {}),
+      }).catch((e) => {
+        ledger.append('error', { where: 'strategist', message: String(e) });
+        return null;
+      });
+      // Let-winners-run guard: defense owns exits, so suppress a discretionary LLM sell-to-stable.
+      proposal = reconcileLlmProposal(llmProposal, cfg, { regime, quotes, portfolio });
+      if (llmProposal && !proposal) {
+        ledger.append('proposal', { action: 'hold', reason: 'let-winners-run guard: suppressed LLM exit of healthy position', llmProposal });
+      }
+    }
+
+    // If the LLM holds or errors, the deterministic target-allocation engine drives offense.
+    if (!proposal) {
+      proposal = rulesFallbackPropose(cfg, { regime, quotes, technicals, portfolio });
+      if (proposal) ledger.append('rules_fallback', proposal);
+    }
   }
 
   // --- Heartbeat: guarantee >= 1 trade/day (competition qualification) ---
@@ -197,10 +272,12 @@ async function cycle(deps: {
       await notifier.send(`🚫 Sentinel rejected ${proposal.fromSymbol}→${proposal.toSymbol}: ${verdict.reasons.join('; ')}`);
     }
   } else {
-    // No trade this cycle (strategist held, or before the heartbeat hour). Surface it so
+    // No trade this cycle (holding a winner, paused on cooldown/cap, or no edge). Surface it so
     // paper/live trading is never silent — report regime, equity, PnL, and the hold decision.
-    ledger.append('proposal', { action: 'hold', regime: regime.regime, score: regime.score });
-    await notifier.send(`🔵 ${regime.regime} (${regime.score}) · equity $${portfolio.totalUsd.toFixed(2)}${pnlNote} · holding — no trade this cycle`);
+    const posNote = state.positionSymbol ? ` · holding ${state.positionSymbol}` : '';
+    const why = pauseReason ? ` · ${pauseReason}` : '';
+    ledger.append('proposal', { action: 'hold', regime: regime.regime, score: regime.score, position: state.positionSymbol, pauseReason });
+    await notifier.send(`🔵 ${regime.regime} (${regime.score}) · equity $${portfolio.totalUsd.toFixed(2)}${pnlNote}${posNote}${why} — no trade this cycle`);
   }
 
   saveState(statePath, state);

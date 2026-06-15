@@ -8,8 +8,8 @@ const cfg = {
   venues: { spot: { enabled: true }, perps: { enabled: false } },
   loop: { intervalMinutes: 15, killSwitchPath: './KILL' },
   risk: {
-    maxTradePctOfEquity: 0.15, maxTradesPerDay: 12, maxDailyNotionalPctOfEquity: 1.0,
-    maxDrawdownPct: 0.18, maxSlippagePct: 1.0, cooldownMinutes: 20,
+    maxTradePctOfEquity: 0.10, maxTradesPerDay: 4, maxDailyNotionalPctOfEquity: 0.35,
+    maxDrawdownPct: 0.18, maxSlippagePct: 1.0, cooldownMinutes: 180, minHoldMinutes: 240,
     minPortfolioUsd: 25, stableSymbol: 'USDT',
   },
   heartbeat: { enabled: true, deadlineUtcHour: 20, usdNotional: 5, toSymbol: 'CAKE' },
@@ -48,10 +48,10 @@ test('rejects ambiguous unpinned symbol (single-letter "B")', () => {
   assert.match(v.reasons.join(' '), /ambiguous/);
 });
 
-test('clamps oversized notional to per-trade cap (15% of equity)', () => {
+test('clamps oversized notional to per-trade cap (10% of equity)', () => {
   const v = sentinelValidate(prop({ usdNotional: 900 }), portfolio(1000, [{ symbol: 'USDT', amount: 1000, valueUsd: 1000 }]), baseState, cfg);
   assert.equal(v.approved, true);
-  assert.equal(v.effective.usdNotional, 150);
+  assert.equal(v.effective.usdNotional, 100);
 });
 
 test('blocks new risk while circuit breaker drawdown active', () => {
@@ -69,7 +69,7 @@ test('circuit_breaker-source flatten IS allowed during drawdown', () => {
 });
 
 test('enforces daily trade cap', () => {
-  const v = sentinelValidate(prop(), portfolio(1000, [{ symbol: 'USDT', amount: 1000, valueUsd: 1000 }]), { ...baseState, tradesToday: 12 }, cfg);
+  const v = sentinelValidate(prop(), portfolio(1000, [{ symbol: 'USDT', amount: 1000, valueUsd: 1000 }]), { ...baseState, tradesToday: 4 }, cfg);
   assert.equal(v.approved, false);
   assert.match(v.reasons.join(' '), /daily trade cap/);
 });
@@ -80,6 +80,42 @@ test('enforces cooldown but exempts heartbeat', () => {
   assert.equal(block.approved, false);
   const hb = sentinelValidate(prop({ source: 'heartbeat', usdNotional: 5 }), portfolio(1000, [{ symbol: 'USDT', amount: 1000, valueUsd: 1000 }]), { ...baseState, lastTradeAt: justNow }, cfg);
   assert.equal(hb.approved, true);
+});
+
+test('blocks rapid reversal of the previous pair after cooldown but before min hold', () => {
+  const lastTradeAt = new Date(Date.now() - 200 * 60_000).toISOString();
+  const v = sentinelValidate(
+    prop({ fromSymbol: 'PENDLE', toSymbol: 'USDT', usdNotional: 50 }),
+    portfolio(1000, [{ symbol: 'PENDLE', amount: 100, valueUsd: 1000 }]),
+    { ...baseState, lastTradeAt, lastTradeFromSymbol: 'USDT', lastTradeToSymbol: 'PENDLE' },
+    cfg,
+  );
+
+  assert.equal(v.approved, false);
+  assert.match(v.reasons.join(' '), /minimum hold/);
+});
+
+test('protective risk_exit is exempt from cooldown and min-hold (capital preservation)', () => {
+  const justNow = new Date(Date.now() - 5 * 60_000).toISOString();
+  const v = sentinelValidate(
+    prop({ fromSymbol: 'PENDLE', toSymbol: 'USDT', usdNotional: 50, source: 'risk_exit' }),
+    portfolio(1000, [{ symbol: 'PENDLE', amount: 100, valueUsd: 1000 }]),
+    { ...baseState, lastTradeAt: justNow, lastTradeFromSymbol: 'USDT', lastTradeToSymbol: 'PENDLE', tradesToday: 6 },
+    cfg,
+  );
+  assert.equal(v.approved, true); // cooldown, min-hold reversal, and daily cap all bypassed
+});
+
+test('allows reversing the previous pair after the min hold window', () => {
+  const lastTradeAt = new Date(Date.now() - 300 * 60_000).toISOString();
+  const v = sentinelValidate(
+    prop({ fromSymbol: 'PENDLE', toSymbol: 'USDT', usdNotional: 50 }),
+    portfolio(1000, [{ symbol: 'PENDLE', amount: 100, valueUsd: 1000 }]),
+    { ...baseState, lastTradeAt, lastTradeFromSymbol: 'USDT', lastTradeToSymbol: 'PENDLE' },
+    cfg,
+  );
+
+  assert.equal(v.approved, true);
 });
 
 test('rejects when portfolio under dust safety floor', () => {

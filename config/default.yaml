@@ -15,18 +15,22 @@ venues:
     enabled: false     # reserved port; no adapter ships. See ARCHITECTURE.md §Venues.
 
 loop:
-  intervalMinutes: 15             # paper: 15 is fine (apikey data is free). LIVE: raise to 60 —
+  intervalMinutes: 60             # paper: 15 is fine for diagnostics. LIVE: keep 60+ to avoid churn and x402 burn.
                                   # x402 costs 0.01 USDC/call, ~2 paid REST calls/cycle; 60-min ≈ $3.40/week,
                                   # leaving room inside a 20 USDC Base budget.
   killSwitchPath: ./KILL
 
 risk:
-  maxTradePctOfEquity: 0.15       # per-trade clamp
-  maxTradesPerDay: 12
-  maxDailyNotionalPctOfEquity: 1.0
+  maxTradePctOfEquity: 0.25       # per-trade clamp; sized for concentrated entries
+  maxTradesPerDay: 6              # enough for entry + scale-in + a protective exit/re-entry
+  maxDailyNotionalPctOfEquity: 0.8
   maxDrawdownPct: 0.18            # flatten LONG before the ~30% disqualification gate
   maxSlippagePct: 1.0
-  cooldownMinutes: 20
+  cooldownMinutes: 45             # discretionary spacing; protective risk_exit is exempt
+  minHoldMinutes: 90              # blocks fast discretionary round trips; risk_exit exempt
+  trailingStopPct: 0.08           # DEFENSE: exit a winner that gives back >8% from its peak
+  switchMarginScore: 4            # OFFENSE: only rotate when a leader is *materially* stronger
+  maxVolatilePctOfEquity: 0.6     # concentrated-but-clamped volatile ceiling
   minPortfolioUsd: 25             # never approach the $1 dust rule
   stableSymbol: USDT
 

@@ -37,7 +37,7 @@ modify a rule.
 | Layer | Implementation | Rubric line it scores |
 |---|---|---|
 | Execution | `TwakSpotVenue` — sole venue; twak CLI, `--json`, local keystore signing | TWAK integration depth (30), self-custody (25) |
-| Guardrails | `sentinel.ts` — 10 pure rules: allowlist, ambiguity pins, per-trade clamp, daily caps, cooldown, drawdown breaker, dust floor | Autonomous execution & guardrails (20) |
+| Guardrails | `sentinel.ts` — 11 pure rules: allowlist, ambiguity pins, per-trade clamp, daily caps, cooldown, minimum hold, drawdown breaker, dust floor | Autonomous execution & guardrails (20) |
 | Data | CMC Agent Hub MCP for API-key mode; **live x402 pays CMC REST quotes/listings from the agent's own wallet via `twak x402 request`** | Native x402 (10) |
 | Identity | (optional module) ERC-8004 registration via `bnbagent` on BSC testnet | Best Use of BNB AI Agent SDK ($2k special) |
 | Audit | Hash-chained JSONL ledger, `npm run verify-ledger` | Demo & on-chain proof (5) |
@@ -46,18 +46,21 @@ modify a rule.
 ## The Sentinel contract
 
 `sentinelValidate(proposal, portfolio, state, config) → verdict` is a **pure function**:
-no I/O, no clock surprises (time injected), fully unit-tested (11 tests). Rules:
+no I/O, no clock surprises (time injected), fully unit-tested. Rules:
 
 1. Both legs in the 149-token competition allowlist (anything else cannot score).
 2. Ambiguous symbols (B, H, M, Q, U, HOME, REAL, …) require pinned BSC contract
    addresses — symbol-resolution collisions are how agents donate money to scam tokens.
 3. Per-trade notional clamped to `maxTradePctOfEquity` (clamp, don't reject — keep alpha).
 4. Max trades/day; 5. max daily notional; 6. cooldown between trades (heartbeat exempt).
-7. **Drawdown circuit breaker**: equity below HWM×(1−18%) ⇒ only `circuit_breaker`-source
+7. Minimum hold window blocks rapid reversal of the last pair. Rules 4–7 are **exempt for
+   deterministic protective exits** (`risk_exit`) and the breaker — capital preservation
+   must never be blocked by an anti-churn timer or a daily cap.
+8. **Drawdown circuit breaker**: equity below HWM×(1−18%) ⇒ only `circuit_breaker`-source
    flatten-to-USDT proposals pass. The competition disqualifies at ~30% drawdown;
    disqualification is the only unrecoverable state, so we never get near it.
-8. Dust floor: portfolio may never approach the $1/hour zero-scoring rule.
-9. No self-swaps; 10. positive notional; plus source-of-funds check against holdings.
+9. Dust floor: portfolio may never approach the $1/hour zero-scoring rule.
+10. No self-swaps; 11. positive notional; plus source-of-funds check against holdings.
 
 ## Venue configurability (the "disable perps" requirement)
 
@@ -79,17 +82,23 @@ by prompt injection, or by LLM creativity.
 
 ## Strategy (live-week profile)
 
-**Regime-aware spot momentum rotation**, tournament-tuned:
+**Regime-aware momentum with a let-winners-run position engine** — one coherent policy
+split into offense and defense, not a model toggling buy/sell each cycle:
 
 - Deterministic regime from Fear & Greed + aggregate funding + altcoin season:
   `risk_on | neutral | risk_off`.
-- `risk_on`: rotate up to 15%/trade into strongest momentum names on the BSC allowlist
-  (CAKE, FLOKI, TWT, PENDLE, INJ, FET…), RSI/MACD-confirmed via CMC TA tools.
-- `risk_off`: rotate toward USDT; a daily `twak automate` DCA (executed by `twak watch`)
-  fires one small trade/day to stay qualified (≥1 trade/day rule = 7 over the week), with
-  an in-loop backstop if the automation hasn't run that day.
-- Sentiment-divergence exit: social heat up while momentum rolls over ⇒ strategist is
-  prompted to propose de-risking.
+- **Offense** (`risk_on`/`neutral`): deploy up to 25%/trade into the strongest momentum
+  names on the BSC allowlist (CAKE, FLOKI, TWT, PENDLE, INJ, FET…), RSI/MACD-confirmed on
+  the cycle's top movers; scale toward a concentrated-but-clamped volatile target and
+  **rotate only when a candidate beats the held token by more than `switchMarginScore`**
+  (sized to cover the ~1% round-trip cost). The LLM proposes; a deterministic
+  target-allocation engine (`rulesFallbackPropose`) runs the same policy when the LLM holds.
+- **Defense** (deterministic `evaluateExit`): per-position trailing stop, trend-break exit
+  (MACD < 0 with EMA20 < EMA50), and regime-flip-to-`risk_off` de-risk to USDT. A
+  let-winners-run guard (`reconcileLlmProposal`) suppresses any discretionary LLM sell of a
+  healthy holding to stable — defense owns exits.
+- **Qualification**: a daily `twak automate` DCA (executed by `twak watch`) fires one small
+  trade/day (≥1 trade/day rule = 7 over the week), with an in-loop backstop if it hasn't run.
 - Tournament logic: most entrants either blow the 30% gate or hide in stables at ~0%.
   Concentrated-but-clamped risk with an 18% hard flatten occupies the winning region.
 
