@@ -118,8 +118,18 @@ export interface LedgerEntry {
 }
 
 export interface AgentState {
-  /** High-water mark of portfolio equity, used for drawdown computation. */
+  /**
+   * High-water mark for the *soft* (re-armable) breaker. Rebased to current equity when the
+   * breaker re-arms, so the 18% soft trigger measures from each fresh start.
+   */
   equityHighWaterUsd: number;
+  /**
+   * All-time equity peak — the immovable reference for the permanent hard-stop. Never
+   * rebased, so repeated soft re-arms can never quietly stack past the disqualification gate.
+   */
+  equityPeakAllTimeUsd?: number;
+  /** Set once the permanent hard-stop engages; the agent never re-risks for the rest of the run. */
+  hardStopped?: boolean;
   lastEquityUsd: number;
   tradesToday: number;
   notionalTodayUsd: number;

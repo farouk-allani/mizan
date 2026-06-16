@@ -47,11 +47,25 @@ export const ConfigSchema = z
        * unrecoverable outcome.
        */
       maxDrawdownPct: z.number().min(0.05).max(0.29).default(0.18),
+      /**
+       * Permanent hard-stop, measured against the ALL-TIME equity peak (not the re-armable
+       * soft reference). Sits below the ~30% disqualification gate. Once breached the agent
+       * flattens and never re-risks — this bounds the cumulative damage soft re-arms could stack.
+       */
+      hardStopDrawdownPct: z.number().min(0.05).max(0.29).default(0.25),
+      /** Hours the soft breaker stays flat before re-arming and allowing redeployment. */
+      breakerRearmHours: z.number().min(0).default(8),
       maxSlippagePct: z.number().min(0.1).max(5).default(1.0),
       cooldownMinutes: z.number().int().min(0).default(45),
       /** Minimum time before reversing the previous pair (discretionary trades only — a
        *  protective `risk_exit` is exempt, like the breaker). */
       minHoldMinutes: z.number().int().min(0).default(90),
+      /**
+       * Anti-whipsaw: after a protective `risk_exit`, stand down from new entries/rotations
+       * for this long. Stops the offense from re-deploying into the same chop that just
+       * stopped us out. The dominant anti-churn guard once a position has been exited.
+       */
+      reentryCooldownMinutes: z.number().int().min(0).default(180),
       /**
        * DEFENSE: trailing stop. Exit the held position once its mark falls this fraction
        * below the peak seen since entry. The core let-winners-run protection.
@@ -142,6 +156,13 @@ export const ConfigSchema = z
         code: z.ZodIssueCode.custom,
         path: ['venues', 'spot', 'enabled'],
         message: 'At least the spot venue must be enabled.',
+      });
+    }
+    if (cfg.risk.hardStopDrawdownPct <= cfg.risk.maxDrawdownPct) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['risk', 'hardStopDrawdownPct'],
+        message: 'hardStopDrawdownPct must exceed maxDrawdownPct (the permanent stop sits beyond the soft breaker).',
       });
     }
   });

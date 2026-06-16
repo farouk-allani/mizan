@@ -55,19 +55,23 @@ holds until that answer changes.
    qualified under the 1-trade/day minimum; an in-loop backstop fires only if the automation
    hasn't run that day.
 5. **Tournament logic:** most entrants either breach the ~30% drawdown gate (disqualified)
-   or hide in stables (~0%). The winning region is *concentrated-but-clamped* risk with a
-   hard 18% auto-flatten — we can lose a battle, we cannot lose the war. Disqualification
-   is the only unrecoverable outcome, so MIZAN structurally never visits it.
+   or hide in stables (~0%). The winning region is *concentrated-but-clamped* risk. A
+   two-tier breaker keeps us there: a **re-armable 18% soft breaker** flattens to USDT, waits
+   out the dip, then redeploys (so one bad swing doesn't bench us for the week), while a
+   **permanent 25% hard stop** against the all-time peak guarantees we never approach the
+   ~30% gate. We can lose a battle and recover; disqualification — the only unrecoverable
+   outcome — is structurally off the table.
 
 ## The Sentinel (guardrails)
 
 Eleven pure rules, 100% unit-tested: competition allowlist on both legs · ambiguous-symbol
 contract pinning (single-letter tickers like B/H/M/Q/U are how agents donate money to
 scam tokens) · 25%-of-equity per-trade clamp (concentrated entries) · max 6 trades/day ·
-daily notional cap · 45-min cooldown · minimum-hold anti-roundtrip rule · **18% drawdown
-circuit breaker → flatten to USDT** · $25 dust floor (the $1/hour rule never threatens us) ·
-no self-swaps · source-of-funds verification. The breaker **and** deterministic protective
-exits (`risk_exit`) are exempt from the anti-churn timers and daily caps — preservation first.
+daily notional cap · 45-min cooldown · minimum-hold anti-roundtrip rule · **two-tier drawdown
+protection: re-armable 18% soft breaker + permanent 25% hard stop → flatten to USDT** · $25
+dust floor (the $1/hour rule never threatens us) · no self-swaps · source-of-funds
+verification. The breaker **and** deterministic protective exits (`risk_exit`) are exempt from
+the anti-churn timers and daily caps — preservation first.
 
 ## Self-custody integrity (TWAK special prize)
 

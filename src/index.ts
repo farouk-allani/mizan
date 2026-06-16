@@ -4,7 +4,7 @@ import { loadConfig, type Config } from './config.js';
 import {
   detectRegime,
   evaluateExit,
-  findPosition,
+  inReentryCooldown,
   isStable,
   reconcileLlmProposal,
   rulesFallbackPropose,
@@ -21,9 +21,18 @@ import { TwakAutomation } from './adapters/twak/TwakAutomation.js';
 import { PaperBook } from './adapters/paper/PaperBook.js';
 import { CmcApiKeyData, CmcX402Data } from './adapters/cmc/CmcData.js';
 import { ConsoleNotifier, OpenAICompatLlm, TelegramNotifier } from './adapters/llm/index.js';
+import { CONTRACT_PINS } from './tokens/allowlist.js';
 
-/** Watch universe: liquid, BSC-native movers from the allowlist. Tune freely. */
-const WATCHLIST = ['CAKE', 'FLOKI', 'TWT', 'PENDLE', 'INJ', 'FET', 'LINK', 'UNI', 'AAVE', 'ETH'];
+/**
+ * Watch universe = exactly what twak can actually execute on BSC: the symbol-routable majors
+ * plus every token with a verified BSC contract pin. Deriving it from CONTRACT_PINS means the
+ * scan set widens the moment a new contract is pinned (and verified) — no dual maintenance, and
+ * the momentum ranker never picks a token that would fail with TOKEN_NOT_FOUND at execution.
+ * To trade more of the 149: pin its BSC contract in allowlist.ts (verify with `twak swap
+ * --quote-only` first), and it joins this list automatically.
+ */
+const SYMBOL_ROUTABLE = ['ETH']; // twak resolves these by symbol on BSC without a pin
+const WATCHLIST = [...new Set([...Object.keys(CONTRACT_PINS), ...SYMBOL_ROUTABLE])];
 
 const formatPnl = (pct: number): string => `${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`;
 
@@ -168,15 +177,35 @@ async function cycle(deps: {
   ledger.append('cycle_start', { mode: cfg.mode, dataTransport: cfg.data.cmcTransport });
 
   const portfolio = await portfolioReader.snapshot();
-  let state = rollState(loadState(statePath), portfolio.totalUsd);
+  const loaded = loadState(statePath);
+  const wasInBreaker = !!loaded.circuitBreakerTrippedAt && !loaded.hardStopped;
+  let state = rollState(loaded, portfolio.totalUsd, cfg);
   // Paper PnL tag appended to every cycle message so the simulated return is always visible.
   const pnlNote = deps.paperBook ? ` (PnL ${formatPnl(deps.paperBook.pnlPct(portfolio.totalUsd))})` : '';
 
-  // --- Circuit breaker check (before anything else) ---
+  // Surface a soft-breaker re-arm (rollState cleared the trip after the cooldown window).
+  if (wasInBreaker && !state.circuitBreakerTrippedAt) {
+    ledger.append('circuit_breaker', { kind: 'rearm', equity: portfolio.totalUsd });
+    await notifier.send(`🟩 circuit breaker re-armed after ${cfg.risk.breakerRearmHours}h — resuming from $${portfolio.totalUsd.toFixed(2)}${pnlNote}`);
+  }
+
+  // --- Hard stop (permanent) — measured against the all-time peak, before anything else ---
+  const peakAllTime = state.equityPeakAllTimeUsd ?? state.equityHighWaterUsd;
+  const absDrawdown = peakAllTime > 0 ? 1 - portfolio.totalUsd / peakAllTime : 0;
+  if (absDrawdown >= cfg.risk.hardStopDrawdownPct && !state.hardStopped) {
+    ledger.append('circuit_breaker', { kind: 'hard_stop', absDrawdown, peakAllTime, equity: portfolio.totalUsd });
+    await notifier.send(`⛔ HARD STOP: ${(absDrawdown * 100).toFixed(1)}% from all-time peak${pnlNote} — flattening to ${cfg.risk.stableSymbol} permanently (no re-risk this run)`);
+    state = await flattenAll(portfolio, ctx, state);
+    state = { ...state, hardStopped: true };
+    saveState(statePath, state);
+    return;
+  }
+
+  // --- Soft circuit breaker (re-armable) ---
   const drawdown = state.equityHighWaterUsd > 0 ? 1 - portfolio.totalUsd / state.equityHighWaterUsd : 0;
   if (drawdown >= cfg.risk.maxDrawdownPct && !state.flattened) {
-    ledger.append('circuit_breaker', { drawdown, hwm: state.equityHighWaterUsd, equity: portfolio.totalUsd });
-    await notifier.send(`🛑 CIRCUIT BREAKER: drawdown ${(drawdown * 100).toFixed(1)}%${pnlNote} — flattening to ${cfg.risk.stableSymbol}`);
+    ledger.append('circuit_breaker', { kind: 'soft', drawdown, hwm: state.equityHighWaterUsd, equity: portfolio.totalUsd });
+    await notifier.send(`🛑 CIRCUIT BREAKER: drawdown ${(drawdown * 100).toFixed(1)}%${pnlNote} — flattening to ${cfg.risk.stableSymbol} (re-arms in ${cfg.risk.breakerRearmHours}h)`);
     state = await flattenAll(portfolio, ctx, state);
     saveState(statePath, state);
     return;
@@ -186,10 +215,11 @@ async function cycle(deps: {
   // cooldown/daily-cap lets us skip the paid data fetch entirely (x402 thrift). If we DO
   // hold, we always fetch and run the deterministic exit check — protective exits never wait.
   const holdsVolatile = portfolio.holdings.some((h) => !isStable(h.symbol) && h.valueUsd > 1);
-  const pauseReason = normalTradingPauseReason(state, portfolio, cfg);
-  if (!holdsVolatile && pauseReason) {
-    ledger.append('proposal', { action: 'hold', reason: pauseReason });
-    await notifier.send(`⏸ trading paused: ${pauseReason} · equity $${portfolio.totalUsd.toFixed(2)}${pnlNote}`);
+  const reentryCooldown = inReentryCooldown(state, cfg);
+  const offenseBlock = normalTradingPauseReason(state, portfolio, cfg) ?? (reentryCooldown ? `re-entry cooldown active (${cfg.risk.reentryCooldownMinutes}m) after protective exit` : null);
+  if (!holdsVolatile && offenseBlock) {
+    ledger.append('proposal', { action: 'hold', reason: offenseBlock });
+    await notifier.send(`⏸ trading paused: ${offenseBlock} · equity $${portfolio.totalUsd.toFixed(2)}${pnlNote}`);
     saveState(statePath, state);
     return;
   }
@@ -210,10 +240,10 @@ async function cycle(deps: {
   state = syncPosition(state, portfolio, quotes, cfg);
 
   // --- DEFENSE: deterministic protective exit (cooldown/min-hold exempt) ---
-  let proposal: TradeProposal | null = evaluateExit(cfg, { regime, quotes, technicals, portfolio, state });
+  let proposal: TradeProposal | null = evaluateExit(cfg, { regime, quotes, portfolio, state });
 
-  // --- OFFENSE: new entries / rotations only when not paused (cooldown/daily caps clear) ---
-  if (!proposal && !pauseReason) {
+  // --- OFFENSE: new entries / rotations only when not blocked (caps, cooldown, re-entry) ---
+  if (!proposal && !offenseBlock) {
     if (cfg.llm.enabled) {
       const llm = new OpenAICompatLlm(cfg);
       const holdingsSummary = portfolio.holdings.map((h) => `${h.symbol}:$${h.valueUsd.toFixed(0)}`).join(' ');
@@ -275,8 +305,8 @@ async function cycle(deps: {
     // No trade this cycle (holding a winner, paused on cooldown/cap, or no edge). Surface it so
     // paper/live trading is never silent — report regime, equity, PnL, and the hold decision.
     const posNote = state.positionSymbol ? ` · holding ${state.positionSymbol}` : '';
-    const why = pauseReason ? ` · ${pauseReason}` : '';
-    ledger.append('proposal', { action: 'hold', regime: regime.regime, score: regime.score, position: state.positionSymbol, pauseReason });
+    const why = offenseBlock ? ` · ${offenseBlock}` : '';
+    ledger.append('proposal', { action: 'hold', regime: regime.regime, score: regime.score, position: state.positionSymbol, offenseBlock });
     await notifier.send(`🔵 ${regime.regime} (${regime.score}) · equity $${portfolio.totalUsd.toFixed(2)}${pnlNote}${posNote}${why} — no trade this cycle`);
   }
 

@@ -53,7 +53,7 @@ export function sentinelValidate(
 
   // 8. drawdown circuit breaker
   const drawdown = state.equityHighWaterUsd > 0 ? 1 - equity / state.equityHighWaterUsd : 0;
-  const breakerActive = drawdown >= cfg.risk.maxDrawdownPct || !!state.circuitBreakerTrippedAt;
+  const breakerActive = drawdown >= cfg.risk.maxDrawdownPct || !!state.circuitBreakerTrippedAt || !!state.hardStopped;
   if (breakerActive && !isBreakerFlatten) {
     reasons.push(
       `circuit breaker active (drawdown ${(drawdown * 100).toFixed(1)}% >= ${(cfg.risk.maxDrawdownPct * 100).toFixed(0)}%) — only flatten-to-${cfg.risk.stableSymbol} permitted`,
@@ -124,8 +124,17 @@ export function sentinelValidate(
   };
 }
 
-/** Daily state rollover + equity/HWM accounting. Call once per cycle. */
-export function rollState(state: AgentState, equityUsd: number, now: Date = new Date()): AgentState {
+/**
+ * Daily state rollover + equity/HWM accounting + soft-breaker re-arm. Call once per cycle.
+ *
+ * Two equity references are maintained:
+ *  - `equityPeakAllTimeUsd` ratchets up forever — the immovable hard-stop reference.
+ *  - `equityHighWaterUsd` is the *soft* breaker reference; it is rebased to current equity
+ *    when the soft breaker re-arms, so the 18% trigger measures from each fresh start.
+ * A tripped soft breaker re-arms after `breakerRearmHours` (unless hard-stopped), clearing
+ * the trip and rebasing the soft reference so the agent can redeploy.
+ */
+export function rollState(state: AgentState, equityUsd: number, cfg: Config, now: Date = new Date()): AgentState {
   const dayKey = now.toISOString().slice(0, 10);
   const next: AgentState = { ...state };
   if (state.dayKey !== dayKey) {
@@ -134,6 +143,21 @@ export function rollState(state: AgentState, equityUsd: number, now: Date = new 
     next.notionalTodayUsd = 0;
   }
   next.lastEquityUsd = equityUsd;
+
+  // All-time peak — never rebased; the hard-stop measures cumulative drawdown against this.
+  next.equityPeakAllTimeUsd = Math.max(state.equityPeakAllTimeUsd ?? 0, state.equityHighWaterUsd ?? 0, equityUsd);
+
+  // Soft-breaker re-arm: after the cooldown, clear the trip and rebase the soft reference.
+  if (next.circuitBreakerTrippedAt && !next.hardStopped) {
+    const hrs = (now.getTime() - new Date(next.circuitBreakerTrippedAt).getTime()) / 3_600_000;
+    if (Number.isFinite(hrs) && hrs >= cfg.risk.breakerRearmHours) {
+      delete next.circuitBreakerTrippedAt;
+      next.flattened = false;
+      next.equityHighWaterUsd = equityUsd; // rebase soft reference; all-time peak still guards the gate
+      return next;
+    }
+  }
+
   if (equityUsd > next.equityHighWaterUsd) next.equityHighWaterUsd = equityUsd;
   return next;
 }

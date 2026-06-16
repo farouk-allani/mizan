@@ -5,6 +5,7 @@ import {
   evaluateExit,
   reconcileLlmProposal,
   syncPosition,
+  inReentryCooldown,
 } from '../dist/core/strategist.js';
 
 const cfg = {
@@ -21,6 +22,7 @@ const cfg = {
     maxSlippagePct: 1.0,
     cooldownMinutes: 45,
     minHoldMinutes: 90,
+    reentryCooldownMinutes: 180,
     trailingStopPct: 0.08,
     switchMarginScore: 4,
     maxVolatilePctOfEquity: 0.6,
@@ -190,7 +192,9 @@ test('exit: holds a healthy winner near its peak', () => {
   assert.equal(p, null);
 });
 
-test('exit: trend break (MACD<0 and EMA20<EMA50) flattens the position', () => {
+test('exit: does NOT dump a position on a short-horizon trend wobble (no trend-break exit)', () => {
+  // Weak/bearish technicals but price only -1% from peak: the removed trend-break rule used to
+  // whipsaw here. Now only the trailing stop / risk_off exit, so this must HOLD.
   const p = evaluateExit(cfg, {
     regime: regime('risk_on', 0.4),
     quotes: [quote('PENDLE', 5, 99)], // no trailing-stop trigger
@@ -198,8 +202,34 @@ test('exit: trend break (MACD<0 and EMA20<EMA50) flattens the position', () => {
     portfolio: portfolio(99, [{ symbol: 'PENDLE', amount: 1, valueUsd: 99 }]),
     state: { ...baseState, positionSymbol: 'PENDLE', positionPeakPriceUsd: 100 },
   });
-  assert.ok(p);
-  assert.match(p.rationale, /trend break/);
+  assert.equal(p, null);
+});
+
+// ---------- Anti-whipsaw: inReentryCooldown ----------
+
+test('reentry cooldown blocks offense right after a protective exit', () => {
+  const recentExit = new Date(Date.now() - 60 * 60_000).toISOString(); // 60m < 180m
+  assert.equal(inReentryCooldown({ ...baseState, lastTradeSource: 'risk_exit', lastTradeAt: recentExit }, cfg), true);
+});
+
+test('reentry cooldown clears after the window', () => {
+  const oldExit = new Date(Date.now() - 200 * 60_000).toISOString(); // 200m > 180m
+  assert.equal(inReentryCooldown({ ...baseState, lastTradeSource: 'risk_exit', lastTradeAt: oldExit }, cfg), false);
+});
+
+test('reentry cooldown does not apply when the last trade was not a protective exit', () => {
+  const recent = new Date(Date.now() - 10 * 60_000).toISOString();
+  assert.equal(inReentryCooldown({ ...baseState, lastTradeSource: 'rules', lastTradeAt: recent }, cfg), false);
+});
+
+test('entry requires a confirmed uptrend (blocks marginal momentum with bearish technicals)', () => {
+  const p = rulesFallbackPropose(cfg, {
+    regime: regime('risk_on', 0.4),
+    quotes: [quote('PENDLE', 5)], // positive 24h, but...
+    technicals: [bearishTech('PENDLE')], // MACD<0 & EMA20<EMA50 => not confirmed
+    portfolio: portfolio(100, [{ symbol: 'USDT', amount: 100, valueUsd: 100 }]),
+  });
+  assert.equal(p, null);
 });
 
 // ---------- Let-winners-run guard: reconcileLlmProposal ----------

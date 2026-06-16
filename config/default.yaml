@@ -24,10 +24,13 @@ risk:
   maxTradePctOfEquity: 0.25       # per-trade clamp; sized for concentrated entries
   maxTradesPerDay: 6              # enough for entry + scale-in + a protective exit/re-entry
   maxDailyNotionalPctOfEquity: 0.8
-  maxDrawdownPct: 0.18            # flatten LONG before the ~30% disqualification gate
+  maxDrawdownPct: 0.18            # SOFT breaker: flatten to stable, then re-arm (re-armable)
+  hardStopDrawdownPct: 0.25       # HARD stop vs all-time peak: flatten permanently, no re-risk
+  breakerRearmHours: 8            # hours flat after a soft trip before redeploying
   maxSlippagePct: 1.0
   cooldownMinutes: 45             # discretionary spacing; protective risk_exit is exempt
   minHoldMinutes: 90              # blocks fast discretionary round trips; risk_exit exempt
+  reentryCooldownMinutes: 180     # anti-whipsaw: stand down from new entries after a stop-out
   trailingStopPct: 0.08           # DEFENSE: exit a winner that gives back >8% from its peak
   switchMarginScore: 4            # OFFENSE: only rotate when a leader is *materially* stronger
   maxVolatilePctOfEquity: 0.6     # concentrated-but-clamped volatile ceiling

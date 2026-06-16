@@ -56,9 +56,11 @@ no I/O, no clock surprises (time injected), fully unit-tested. Rules:
 7. Minimum hold window blocks rapid reversal of the last pair. Rules 4–7 are **exempt for
    deterministic protective exits** (`risk_exit`) and the breaker — capital preservation
    must never be blocked by an anti-churn timer or a daily cap.
-8. **Drawdown circuit breaker**: equity below HWM×(1−18%) ⇒ only `circuit_breaker`-source
-   flatten-to-USDT proposals pass. The competition disqualifies at ~30% drawdown;
-   disqualification is the only unrecoverable state, so we never get near it.
+8. **Two-tier drawdown breaker**: a re-armable **soft** breaker (equity below the soft HWM×
+   (1−18%)) flattens to USDT, waits `breakerRearmHours`, then rebases and redeploys; a
+   permanent **hard stop** (equity below the *all-time* peak×(1−25%)) flattens for good and
+   never re-risks. While tripped, only `circuit_breaker`-source flattens pass. The competition
+   disqualifies at ~30%; the 25% hard stop sits below it, so we never get near it.
 9. Dust floor: portfolio may never approach the $1/hour zero-scoring rule.
 10. No self-swaps; 11. positive notional; plus source-of-funds check against holdings.
 

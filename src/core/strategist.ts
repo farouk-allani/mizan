@@ -166,6 +166,32 @@ function scoreFor(symbol: string, quotes: TokenQuote[], technicals: TechnicalSna
   return (q?.pctChange24h ?? 0) + technicalScore(t);
 }
 
+/**
+ * Trend confirmation for an ENTRY. When technicals exist for the symbol we require an actual
+ * uptrend (MACD histogram > 0 and EMA20 > EMA50) — not just a positive 24h print — so the bot
+ * deploys into confirmed momentum rather than getting chopped up entering weak setups. When no
+ * technicals are available we don't block (the score/24h gate still applies).
+ */
+function trendConfirmed(symbol: string, technicals: TechnicalSnapshot[]): boolean {
+  const t = technicals.find((x) => x.symbol.toUpperCase() === symbol.toUpperCase());
+  if (!t) return true;
+  const macdOk = !t.macd || t.macd.histogram > 0;
+  const emaOk = t.ema20 === undefined || t.ema50 === undefined || t.ema20 > t.ema50;
+  return macdOk && emaOk;
+}
+
+/**
+ * Re-entry cooldown: after a protective `risk_exit`, stand down from new deployments for
+ * `reentryCooldownMinutes`. This is the anti-whipsaw guard — without it the offense re-enters
+ * the same chop that just stopped us out, paying spread on every round trip. Reuses the
+ * last-trade memory (no extra state), and only applies when the last trade was an exit.
+ */
+export function inReentryCooldown(state: AgentState, cfg: Config, now: Date = new Date()): boolean {
+  if (state.lastTradeSource !== 'risk_exit' || !state.lastTradeAt) return false;
+  const mins = (now.getTime() - new Date(state.lastTradeAt).getTime()) / 60_000;
+  return Number.isFinite(mins) && mins < cfg.risk.reentryCooldownMinutes;
+}
+
 function bestMomentum(quotes: TokenQuote[], technicals: TechnicalSnapshot[], stableSymbol: string) {
   const techBySymbol = new Map(technicals.map((t) => [t.symbol.toUpperCase(), t]));
   return quotes
@@ -221,19 +247,25 @@ export function syncPosition(state: AgentState, portfolio: PortfolioSnapshot, qu
 
 /**
  * DEFENSE — deterministic protective exit. Returns a full flatten-to-stable of the held
- * position when any preservation trigger fires; otherwise null. Source `risk_exit` is
+ * position when a preservation trigger fires; otherwise null. Source `risk_exit` is
  * cooldown/min-hold/daily-cap exempt in the Sentinel (capital preservation must not wait).
+ *
+ * Two triggers only — deliberately NOT a fast oscillating signal:
+ *  - regime flip to risk_off (macro de-risk);
+ *  - trailing stop, which doubles as a hard stop-loss (peak starts at entry, so a position
+ *    that falls trailingStopPct below entry exits) AND a profit-lock (the peak trails up).
+ * A short-horizon MACD/EMA "trend break" was intentionally removed: it whipsawed against the
+ * momentum entry signal in chop, dumping healthy positions on noise and bleeding spread.
  */
 export function evaluateExit(
   cfg: Config,
-  ctx: { regime: RegimeReading; quotes: TokenQuote[]; technicals: TechnicalSnapshot[]; portfolio: PortfolioSnapshot; state: AgentState },
+  ctx: { regime: RegimeReading; quotes: TokenQuote[]; portfolio: PortfolioSnapshot; state: AgentState },
 ): TradeProposal | null {
   const stable = cfg.risk.stableSymbol;
   const pos = findPosition(ctx.portfolio, ctx.quotes, cfg);
   if (!pos || pos.symbol.toUpperCase() === stable.toUpperCase()) return null;
 
   const peak = ctx.state.positionPeakPriceUsd ?? pos.priceUsd;
-  const tech = ctx.technicals.find((t) => t.symbol.toUpperCase() === pos.symbol.toUpperCase());
 
   let reason: string | null = null;
   if (ctx.regime.regime === 'risk_off') {
@@ -241,8 +273,6 @@ export function evaluateExit(
   } else if (pos.priceUsd > 0 && peak > 0 && pos.priceUsd <= peak * (1 - cfg.risk.trailingStopPct)) {
     const drop = ((peak - pos.priceUsd) / peak) * 100;
     reason = `trailing stop: ${pos.symbol} -${drop.toFixed(1)}% from peak (>${(cfg.risk.trailingStopPct * 100).toFixed(0)}%)`;
-  } else if (tech?.macd && tech.macd.histogram < 0 && tech.ema20 !== undefined && tech.ema50 !== undefined && tech.ema20 < tech.ema50) {
-    reason = `trend break: ${pos.symbol} MACD histogram < 0 and EMA20 < EMA50`;
   }
   if (!reason) return null;
 
@@ -297,10 +327,11 @@ export function rulesFallbackPropose(
   const candidate = bestMomentum(ctx.quotes, ctx.technicals, stable);
   if (!candidate) return null;
 
-  // Entry quality gate, slightly stricter in neutral than risk_on.
+  // Entry quality gate, slightly stricter in neutral than risk_on; require a confirmed uptrend.
   const minScore = ctx.regime.regime === 'risk_on' ? 3 : 5;
   const min24h = ctx.regime.regime === 'risk_on' ? 1 : 2;
-  const candidatePasses = candidate.pct24h >= min24h && candidate.score >= minScore;
+  const candidatePasses =
+    candidate.pct24h >= min24h && candidate.score >= minScore && trendConfirmed(candidate.quote.symbol, ctx.technicals);
 
   const perTradeCap = equity * cfg.risk.maxTradePctOfEquity;
   const stableUsd = heldUsd(ctx.portfolio, stable);
@@ -330,8 +361,9 @@ export function rulesFallbackPropose(
         };
       }
     }
-    // Scale into the held winner toward the volatile target while it still rates a hold.
-    if (heldScore >= minScore && currentVolatileUsd < targetVolatileUsd && stableUsd > minTradeUsd) {
+    // Scale into the held winner toward the volatile target while it still rates a hold
+    // and its trend is still confirmed.
+    if (heldScore >= minScore && trendConfirmed(pos.symbol, ctx.technicals) && currentVolatileUsd < targetVolatileUsd && stableUsd > minTradeUsd) {
       const notional = Math.min(perTradeCap, targetVolatileUsd - currentVolatileUsd, stableUsd * 0.98);
       if (notional >= minTradeUsd) {
         return {

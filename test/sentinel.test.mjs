@@ -9,7 +9,8 @@ const cfg = {
   loop: { intervalMinutes: 15, killSwitchPath: './KILL' },
   risk: {
     maxTradePctOfEquity: 0.10, maxTradesPerDay: 4, maxDailyNotionalPctOfEquity: 0.35,
-    maxDrawdownPct: 0.18, maxSlippagePct: 1.0, cooldownMinutes: 180, minHoldMinutes: 240,
+    maxDrawdownPct: 0.18, hardStopDrawdownPct: 0.25, breakerRearmHours: 8,
+    maxSlippagePct: 1.0, cooldownMinutes: 180, minHoldMinutes: 240,
     minPortfolioUsd: 25, stableSymbol: 'USDT',
   },
   heartbeat: { enabled: true, deadlineUtcHour: 20, usdNotional: 5, toSymbol: 'CAKE' },
@@ -132,8 +133,46 @@ test('rejects self-swap and non-positive notional', () => {
 });
 
 test('rollState resets daily counters on new day and tracks HWM', () => {
-  const s = rollState({ ...baseState, dayKey: '2020-01-01', tradesToday: 7, notionalTodayUsd: 400 }, 1200);
+  const s = rollState({ ...baseState, dayKey: '2020-01-01', tradesToday: 7, notionalTodayUsd: 400 }, 1200, cfg);
   assert.equal(s.tradesToday, 0);
   assert.equal(s.notionalTodayUsd, 0);
   assert.equal(s.equityHighWaterUsd, 1200);
+  assert.equal(s.equityPeakAllTimeUsd, 1200);
+});
+
+test('soft breaker re-arms after the cooldown window and rebases the soft reference', () => {
+  const tripped = new Date(Date.now() - 9 * 3600_000).toISOString(); // > 8h
+  const s = rollState(
+    { ...baseState, equityHighWaterUsd: 1000, equityPeakAllTimeUsd: 1000, circuitBreakerTrippedAt: tripped, flattened: true },
+    820, cfg,
+  );
+  assert.equal(s.circuitBreakerTrippedAt, undefined);
+  assert.equal(s.flattened, false);
+  assert.equal(s.equityHighWaterUsd, 820); // rebased to current equity
+  assert.equal(s.equityPeakAllTimeUsd, 1000); // all-time peak untouched
+});
+
+test('soft breaker stays tripped before the cooldown window elapses', () => {
+  const tripped = new Date(Date.now() - 1 * 3600_000).toISOString(); // < 8h
+  const s = rollState(
+    { ...baseState, equityHighWaterUsd: 1000, equityPeakAllTimeUsd: 1000, circuitBreakerTrippedAt: tripped, flattened: true },
+    820, cfg,
+  );
+  assert.ok(s.circuitBreakerTrippedAt);
+  assert.equal(s.flattened, true);
+});
+
+test('a hard-stopped run never re-arms, however long it waits', () => {
+  const tripped = new Date(Date.now() - 99 * 3600_000).toISOString();
+  const s = rollState(
+    { ...baseState, equityPeakAllTimeUsd: 1000, circuitBreakerTrippedAt: tripped, flattened: true, hardStopped: true },
+    700, cfg,
+  );
+  assert.ok(s.circuitBreakerTrippedAt); // still locked
+});
+
+test('hard-stopped state blocks all new risk even with no fresh drawdown', () => {
+  const v = sentinelValidate(prop(), portfolio(1000, [{ symbol: 'USDT', amount: 1000, valueUsd: 1000 }]), { ...baseState, hardStopped: true }, cfg);
+  assert.equal(v.approved, false);
+  assert.match(v.reasons.join(' '), /circuit breaker/);
 });
