@@ -245,30 +245,63 @@ export function syncPosition(state: AgentState, portfolio: PortfolioSnapshot, qu
   return { ...state, positionPeakPriceUsd: peak };
 }
 
+/** Contrarian sleeve is armed when enabled and Fear & Greed is at/below the capitulation floor. */
+export function contrarianArmed(cfg: Config, fearGreed: number | undefined): boolean {
+  return cfg.risk.contrarianEnabled && fearGreed !== undefined && fearGreed <= cfg.risk.contrarianFearThreshold;
+}
+
+/**
+ * Early-reversal confirmation for a contrarian (mean-reversion) entry: momentum turning up
+ * (MACD histogram > 0) while RSI is climbing out of oversold (35–60) but not yet hot. Requires
+ * technicals — with no data we cannot confirm a turn, so we don't buy the knife. Deliberately
+ * does NOT require the EMA20>EMA50 cross (that lags; the point is to enter as the turn starts).
+ */
+function reversalConfirmed(symbol: string, technicals: TechnicalSnapshot[]): boolean {
+  const t = technicals.find((x) => x.symbol.toUpperCase() === symbol.toUpperCase());
+  if (!t || !t.macd) return false;
+  const macdUp = t.macd.histogram > 0;
+  const rsiRecovering = t.rsi14 !== undefined && t.rsi14 >= 35 && t.rsi14 <= 60;
+  return macdUp && rsiRecovering;
+}
+
+function bestReversal(quotes: TokenQuote[], technicals: TechnicalSnapshot[], stableSymbol: string) {
+  return quotes
+    .filter((q) => q.priceUsd > 0)
+    .filter((q) => q.symbol.toUpperCase() !== stableSymbol.toUpperCase())
+    .filter((q) => !isStable(q.symbol))
+    .filter((q) => ALLOWLIST_SYMBOLS.has(q.symbol.toUpperCase()))
+    .filter((q) => reversalConfirmed(q.symbol, technicals))
+    .map((q) => ({ quote: q, score: scoreFor(q.symbol, quotes, technicals) }))
+    .sort((a, b) => b.score - a.score)[0];
+}
+
 /**
  * DEFENSE — deterministic protective exit. Returns a full flatten-to-stable of the held
  * position when a preservation trigger fires; otherwise null. Source `risk_exit` is
  * cooldown/min-hold/daily-cap exempt in the Sentinel (capital preservation must not wait).
  *
- * Two triggers only — deliberately NOT a fast oscillating signal:
- *  - regime flip to risk_off (macro de-risk);
+ * Triggers — deliberately NOT a fast oscillating signal:
+ *  - regime flip to risk_off (macro de-risk) — SUSPENDED while the contrarian sleeve is armed,
+ *    otherwise a deep-fear contrarian entry would be reversed the very next cycle;
  *  - trailing stop, which doubles as a hard stop-loss (peak starts at entry, so a position
  *    that falls trailingStopPct below entry exits) AND a profit-lock (the peak trails up).
- * A short-horizon MACD/EMA "trend break" was intentionally removed: it whipsawed against the
- * momentum entry signal in chop, dumping healthy positions on noise and bleeding spread.
+ * The trailing/hard stops still protect contrarian positions, so suspending the regime exit
+ * does not remove downside protection. A short-horizon MACD/EMA "trend break" was intentionally
+ * removed: it whipsawed against the entry signal in chop, bleeding spread.
  */
 export function evaluateExit(
   cfg: Config,
-  ctx: { regime: RegimeReading; quotes: TokenQuote[]; portfolio: PortfolioSnapshot; state: AgentState },
+  ctx: { regime: RegimeReading; quotes: TokenQuote[]; portfolio: PortfolioSnapshot; state: AgentState; fearGreed?: number },
 ): TradeProposal | null {
   const stable = cfg.risk.stableSymbol;
   const pos = findPosition(ctx.portfolio, ctx.quotes, cfg);
   if (!pos || pos.symbol.toUpperCase() === stable.toUpperCase()) return null;
 
   const peak = ctx.state.positionPeakPriceUsd ?? pos.priceUsd;
+  const armed = contrarianArmed(cfg, ctx.fearGreed);
 
   let reason: string | null = null;
-  if (ctx.regime.regime === 'risk_off') {
+  if (ctx.regime.regime === 'risk_off' && !armed) {
     reason = `regime risk_off (score ${ctx.regime.score}): de-risk ${pos.symbol} to ${stable}`;
   } else if (pos.priceUsd > 0 && peak > 0 && pos.priceUsd <= peak * (1 - cfg.risk.trailingStopPct)) {
     const drop = ((peak - pos.priceUsd) / peak) * 100;
@@ -297,8 +330,13 @@ export function reconcileLlmProposal(
   ctx: { regime: RegimeReading; quotes: TokenQuote[]; portfolio: PortfolioSnapshot },
 ): TradeProposal | null {
   if (!proposal || proposal.source !== 'strategist_llm') return proposal;
-  if (!isStable(proposal.toSymbol)) return proposal; // entry or rotation — allowed
-  if (ctx.regime.regime === 'risk_off') return proposal; // legitimate de-risk
+  const acquiresVolatile = !isStable(proposal.toSymbol);
+  // risk_off: the policy is "be in stables". Block any LLM proposal that *acquires* volatile
+  // (entry or rotation) — otherwise defense de-risks it next cycle, a guaranteed round trip.
+  if (ctx.regime.regime === 'risk_off' && acquiresVolatile) return null;
+  if (acquiresVolatile) return proposal; // entry or rotation in a constructive regime — allowed
+  // Selling to stable: legitimate de-risk in risk_off, otherwise let winners run (defense owns exits).
+  if (ctx.regime.regime === 'risk_off') return proposal;
   const pos = findPosition(ctx.portfolio, ctx.quotes, cfg);
   if (pos && proposal.fromSymbol.toUpperCase() === pos.symbol.toUpperCase()) return null; // hold the winner
   return proposal;
@@ -391,5 +429,60 @@ export function rulesFallbackPropose(
     usdNotional: Number(notional.toFixed(2)),
     rationale: `${ctx.regime.regime} entry into strongest confirmed momentum ${candidate.quote.symbol} (24h ${candidate.pct24h.toFixed(2)}%, score ${candidate.score.toFixed(2)})`,
     source: 'rules',
+  };
+}
+
+/**
+ * CONTRARIAN sleeve — only meaningful in extreme fear, where momentum offense stays out. Takes
+ * a SMALL, tightly-capped mean-reversion bet on an oversold-and-turning quality token (see
+ * `reversalConfirmed`), betting on the bounce that often follows capitulation. Uses its own
+ * smaller per-trade and volatile caps so a continued slide is cheap; the trailing/hard stops do
+ * the rest. Scales the held position if it is still confirming a turn, else opens the best
+ * reversal candidate. Sentinel validates it like any offense trade (cooldown/caps apply).
+ */
+export function contrarianPropose(
+  cfg: Config,
+  ctx: {
+    regime: RegimeReading;
+    quotes: TokenQuote[];
+    technicals: TechnicalSnapshot[];
+    portfolio: PortfolioSnapshot;
+    fearGreed?: number;
+  },
+): TradeProposal | null {
+  if (!contrarianArmed(cfg, ctx.fearGreed)) return null;
+
+  const stable = cfg.risk.stableSymbol;
+  const equity = ctx.portfolio.totalUsd;
+  if (equity < cfg.risk.minPortfolioUsd) return null;
+
+  const stableUsd = heldUsd(ctx.portfolio, stable);
+  const currentVolatileUsd = volatileUsd(ctx.portfolio);
+  const targetVolatileUsd = equity * cfg.risk.contrarianMaxVolatilePctOfEquity;
+  if (currentVolatileUsd >= targetVolatileUsd || stableUsd < 1) return null;
+
+  const perTradeCap = equity * cfg.risk.contrarianMaxTradePctOfEquity;
+  const minTradeUsd = Math.max(5, Math.min(25, equity * 0.05));
+  const pos = findPosition(ctx.portfolio, ctx.quotes, cfg);
+
+  // Prefer scaling a held position that is still confirming a turn; otherwise open the leader.
+  const targetSymbol =
+    pos && reversalConfirmed(pos.symbol, ctx.technicals)
+      ? pos.symbol
+      : !pos
+        ? bestReversal(ctx.quotes, ctx.technicals, stable)?.quote.symbol
+        : undefined;
+  if (!targetSymbol) return null;
+
+  const notional = Math.min(perTradeCap, targetVolatileUsd - currentVolatileUsd, stableUsd * 0.98);
+  if (notional < minTradeUsd) return null;
+
+  return {
+    kind: 'swap',
+    fromSymbol: stable,
+    toSymbol: targetSymbol,
+    usdNotional: Number(notional.toFixed(2)),
+    rationale: `contrarian probe in extreme fear (F&G ${ctx.fearGreed}): ${targetSymbol} oversold-and-turning (RSI recovering, MACD up)`,
+    source: 'contrarian',
   };
 }

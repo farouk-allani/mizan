@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { loadDotenv } from './env.js';
 import { loadConfig, type Config } from './config.js';
 import {
+  contrarianPropose,
   detectRegime,
   evaluateExit,
   inReentryCooldown,
@@ -240,7 +241,7 @@ async function cycle(deps: {
   state = syncPosition(state, portfolio, quotes, cfg);
 
   // --- DEFENSE: deterministic protective exit (cooldown/min-hold exempt) ---
-  let proposal: TradeProposal | null = evaluateExit(cfg, { regime, quotes, portfolio, state });
+  let proposal: TradeProposal | null = evaluateExit(cfg, { regime, quotes, portfolio, state, ...(global.fearGreed !== undefined ? { fearGreed: global.fearGreed } : {}) });
 
   // --- OFFENSE: new entries / rotations only when not blocked (caps, cooldown, re-entry) ---
   if (!proposal && !offenseBlock) {
@@ -268,6 +269,13 @@ async function cycle(deps: {
     // If the LLM holds or errors, the deterministic target-allocation engine drives offense.
     if (!proposal) {
       proposal = rulesFallbackPropose(cfg, { regime, quotes, technicals, portfolio });
+      if (proposal) ledger.append('rules_fallback', proposal);
+    }
+
+    // Last: the contrarian sleeve. Only fires in extreme fear (where momentum offense stays
+    // out), taking a small capped mean-reversion bet on an oversold-and-turning quality token.
+    if (!proposal) {
+      proposal = contrarianPropose(cfg, { regime, quotes, technicals, portfolio, ...(global.fearGreed !== undefined ? { fearGreed: global.fearGreed } : {}) });
       if (proposal) ledger.append('rules_fallback', proposal);
     }
   }

@@ -46,15 +46,20 @@ holds until that answer changes.
    toward a concentrated-but-clamped volatile target; we **rotate only when a candidate beats
    the held token by a margin sized to cover the round-trip cost** — never between near-ties.
    A deterministic target-allocation engine drives the same policy whenever the LLM holds.
-3. **Defense (exits, deterministic):** a per-position **trailing stop** locks in trend gains,
-   a **trend-break** rule (MACD rolling over below the EMA cross) and a **regime flip to
-   risk_off** flatten to USDT. Protective exits are exempt from the anti-churn timers so
-   capital preservation never waits. A let-winners-run guard suppresses any discretionary LLM
-   sell of a healthy holding — defense owns that call.
-4. **Qualification:** a daily `twak automate` DCA (~$5, executed by `twak watch`) keeps us
+3. **Defense (exits, deterministic):** a per-position **trailing stop** (doubling as a hard
+   stop-loss) and a **regime flip to risk_off** flatten to USDT. Protective exits are exempt
+   from the anti-churn timers so capital preservation never waits. A let-winners-run guard
+   suppresses any discretionary LLM sell of a healthy holding — defense owns that call.
+4. **Contrarian sleeve (extreme fear):** when Fear & Greed hits capitulation (≤25), momentum
+   offense stays out — but that is where bounces start, so MIZAN may take a *small, tightly
+   capped* mean-reversion bet on an oversold-and-*turning* quality token (RSI recovering +
+   MACD turning up — never a falling knife). Smaller per-trade and volatile caps; the trailing
+   and hard stops still protect, and the risk_off auto-exit is suspended while armed so the bet
+   isn't reversed next cycle.
+5. **Qualification:** a daily `twak automate` DCA (~$5, executed by `twak watch`) keeps us
    qualified under the 1-trade/day minimum; an in-loop backstop fires only if the automation
    hasn't run that day.
-5. **Tournament logic:** most entrants either breach the ~30% drawdown gate (disqualified)
+6. **Tournament logic:** most entrants either breach the ~30% drawdown gate (disqualified)
    or hide in stables (~0%). The winning region is *concentrated-but-clamped* risk. A
    two-tier breaker keeps us there: a **re-armable 18% soft breaker** flattens to USDT, waits
    out the dip, then redeploys (so one bad swing doesn't bench us for the week), while a

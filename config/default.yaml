@@ -34,6 +34,10 @@ risk:
   trailingStopPct: 0.08           # DEFENSE: exit a winner that gives back >8% from its peak
   switchMarginScore: 4            # OFFENSE: only rotate when a leader is *materially* stronger
   maxVolatilePctOfEquity: 0.6     # concentrated-but-clamped volatile ceiling
+  contrarianEnabled: true         # in extreme fear, take a small capped mean-reversion bet
+  contrarianFearThreshold: 25     # only when Fear & Greed <= 25 (deep capitulation)
+  contrarianMaxTradePctOfEquity: 0.10   # smaller per-trade cap for contrarian probes
+  contrarianMaxVolatilePctOfEquity: 0.25  # smaller volatile ceiling while running contrarian
   minPortfolioUsd: 25             # never approach the $1 dust rule
   stableSymbol: USDT
 

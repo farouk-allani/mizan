@@ -6,6 +6,7 @@ import {
   reconcileLlmProposal,
   syncPosition,
   inReentryCooldown,
+  contrarianPropose,
 } from '../dist/core/strategist.js';
 
 const cfg = {
@@ -26,6 +27,10 @@ const cfg = {
     trailingStopPct: 0.08,
     switchMarginScore: 4,
     maxVolatilePctOfEquity: 0.6,
+    contrarianEnabled: true,
+    contrarianFearThreshold: 25,
+    contrarianMaxTradePctOfEquity: 0.10,
+    contrarianMaxVolatilePctOfEquity: 0.25,
     minPortfolioUsd: 25,
     stableSymbol: 'USDT',
   },
@@ -205,6 +210,77 @@ test('exit: does NOT dump a position on a short-horizon trend wobble (no trend-b
   assert.equal(p, null);
 });
 
+test('exit: while contrarian sleeve is armed (extreme fear), the risk_off auto-exit is suspended', () => {
+  const p = evaluateExit(cfg, {
+    regime: regime('risk_off', -0.5),
+    quotes: [quote('PENDLE', 5, 99)], // near peak, no trailing-stop trigger
+    portfolio: portfolio(50, [{ symbol: 'PENDLE', amount: 0.5, valueUsd: 50 }]),
+    state: { ...baseState, positionSymbol: 'PENDLE', positionPeakPriceUsd: 100 },
+    fearGreed: 24, // <= threshold => armed
+  });
+  assert.equal(p, null); // held, not reversed
+});
+
+test('exit: armed or not, the trailing stop still protects a contrarian position', () => {
+  const p = evaluateExit(cfg, {
+    regime: regime('risk_off', -0.5),
+    quotes: [quote('PENDLE', 5, 90)], // 90 <= 100*0.92 => trailing stop
+    portfolio: portfolio(45, [{ symbol: 'PENDLE', amount: 0.5, valueUsd: 45 }]),
+    state: { ...baseState, positionSymbol: 'PENDLE', positionPeakPriceUsd: 100 },
+    fearGreed: 24,
+  });
+  assert.ok(p);
+  assert.match(p.rationale, /trailing stop/);
+});
+
+// ---------- CONTRARIAN sleeve: contrarianPropose ----------
+
+test('contrarian: in extreme fear, opens a small capped bet on an oversold-and-turning token', () => {
+  const p = contrarianPropose(cfg, {
+    regime: regime('risk_off', -0.5),
+    quotes: [quote('CAKE', -3, 1)], // beaten down on 24h, but...
+    technicals: [bullishTech('CAKE')], // RSI 58 (recovering) + MACD>0 => reversal confirmed
+    portfolio: portfolio(100, [{ symbol: 'USDT', amount: 100, valueUsd: 100 }]),
+    fearGreed: 24,
+  });
+  assert.equal(p.toSymbol, 'CAKE');
+  assert.equal(p.source, 'contrarian');
+  assert.equal(p.usdNotional, 10); // contrarian per-trade cap 10% of 100
+});
+
+test('contrarian: stays out when fear is not extreme (above threshold)', () => {
+  const p = contrarianPropose(cfg, {
+    regime: regime('risk_off', -0.3),
+    quotes: [quote('CAKE', -3, 1)],
+    technicals: [bullishTech('CAKE')],
+    portfolio: portfolio(100, [{ symbol: 'USDT', amount: 100, valueUsd: 100 }]),
+    fearGreed: 40, // > 25 => not armed
+  });
+  assert.equal(p, null);
+});
+
+test('contrarian: refuses to catch a knife — no entry without a confirmed turn', () => {
+  const p = contrarianPropose(cfg, {
+    regime: regime('risk_off', -0.5),
+    quotes: [quote('CAKE', -3, 1)],
+    technicals: [bearishTech('CAKE')], // MACD<0 => not turning => no entry
+    portfolio: portfolio(100, [{ symbol: 'USDT', amount: 100, valueUsd: 100 }]),
+    fearGreed: 24,
+  });
+  assert.equal(p, null);
+});
+
+test('contrarian: disabled config never proposes', () => {
+  const p = contrarianPropose({ ...cfg, risk: { ...cfg.risk, contrarianEnabled: false } }, {
+    regime: regime('risk_off', -0.5),
+    quotes: [quote('CAKE', -3, 1)],
+    technicals: [bullishTech('CAKE')],
+    portfolio: portfolio(100, [{ symbol: 'USDT', amount: 100, valueUsd: 100 }]),
+    fearGreed: 24,
+  });
+  assert.equal(p, null);
+});
+
 // ---------- Anti-whipsaw: inReentryCooldown ----------
 
 test('reentry cooldown blocks offense right after a protective exit', () => {
@@ -252,6 +328,16 @@ test('reconcile: allows the LLM de-risk to stable in risk-off', () => {
     portfolio: portfolio(50, [{ symbol: 'PENDLE', amount: 0.5, valueUsd: 50 }]),
   });
   assert.equal(out, llmSell);
+});
+
+test('reconcile: blocks an LLM entry into volatile during risk_off (defense would reverse it)', () => {
+  const entry = { ...llmSell, fromSymbol: 'USDT', toSymbol: 'CAKE' };
+  const out = reconcileLlmProposal(entry, cfg, {
+    regime: regime('risk_off', -0.5),
+    quotes: [quote('CAKE', 5, 1)],
+    portfolio: portfolio(100, [{ symbol: 'USDT', amount: 100, valueUsd: 100 }]),
+  });
+  assert.equal(out, null);
 });
 
 test('reconcile: leaves entries and rotations untouched', () => {

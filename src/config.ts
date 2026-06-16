@@ -79,6 +79,20 @@ export const ConfigSchema = z
       switchMarginScore: z.number().min(0).default(4),
       /** Target ceiling on total volatile exposure — "concentrated but clamped". */
       maxVolatilePctOfEquity: z.number().min(0.05).max(1).default(0.6),
+      /**
+       * CONTRARIAN sleeve. In extreme fear, momentum offense sits out — but capitulation is
+       * also where bounces start. When armed, MIZAN may take a SMALL, tightly-capped bet on an
+       * oversold-and-*turning* quality token (RSI recovering + MACD turning up), instead of
+       * just sitting in cash. Trailing stop + hard stop still protect; the regime auto-exit is
+       * suspended while armed so the bet isn't reversed the next cycle.
+       */
+      contrarianEnabled: z.boolean().default(true),
+      /** Arm the sleeve only at/below this Fear & Greed (deep capitulation). */
+      contrarianFearThreshold: z.number().min(0).max(100).default(25),
+      /** Per-trade cap for contrarian probes — smaller than the momentum cap. */
+      contrarianMaxTradePctOfEquity: z.number().min(0.001).max(0.5).default(0.10),
+      /** Volatile-exposure ceiling while running the contrarian sleeve — smaller than momentum. */
+      contrarianMaxVolatilePctOfEquity: z.number().min(0.05).max(1).default(0.25),
       /** Never let portfolio approach the $1 dust rule. */
       minPortfolioUsd: z.number().min(1).default(25),
       /** Symbol the breaker flattens into. Must be in the allowlist. */

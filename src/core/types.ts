@@ -71,7 +71,7 @@ export interface TradeProposal {
    *   flip to risk_off). Like the breaker it owns capital preservation, so the Sentinel
    *   exempts it from the anti-churn timers (cooldown, min-hold) and the daily trade cap.
    */
-  source: 'strategist_llm' | 'rules' | 'heartbeat' | 'circuit_breaker' | 'risk_exit';
+  source: 'strategist_llm' | 'rules' | 'heartbeat' | 'circuit_breaker' | 'risk_exit' | 'contrarian';
 }
 
 export interface SentinelVerdict {
