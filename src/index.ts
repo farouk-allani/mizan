@@ -226,25 +226,31 @@ async function cycle(deps: {
   }
 
   // --- Data + regime (deterministic) ---
-  // One quotes call covers the whole watchlist; spend the per-symbol technicals budget on the
-  // tokens that actually matter — the strongest movers plus whatever we currently hold.
+  // One quotes call covers the whole watchlist. The exit check only needs price, so technicals
+  // (one paid call each) are fetched lazily below — ONLY on cycles where offense can actually
+  // trade. A holding/monitoring cycle therefore costs ~2 paid calls, not ~6, which keeps a
+  // faster loop affordable on the x402 budget.
   const [global, quotes] = await Promise.all([data.global(), data.quotes(WATCHLIST)]);
-  const ranked = [...quotes].sort((a, b) => (b.pctChange24h ?? 0) - (a.pctChange24h ?? 0)).map((q) => q.symbol);
-  const heldSymbol = portfolio.holdings.filter((h) => !isStable(h.symbol) && h.valueUsd > 1).sort((a, b) => b.valueUsd - a.valueUsd)[0]?.symbol;
-  const techSymbols = [...new Set([...(heldSymbol ? [heldSymbol] : []), ...ranked].filter((s) => WATCHLIST.includes(s)))].slice(0, 4);
-  const technicals = await Promise.all(techSymbols.map((s) => data.technicals(s)));
   const regime = detectRegime(global);
-  ledger.append('data', { global, quotes: quotes.length, technicals: technicals.length, techSymbols });
+  ledger.append('data', { global, quotes: quotes.length });
   ledger.append('regime', regime);
 
   // Position memory (entry/peak) synced from portfolio truth — drives trailing stop & scale-in.
   state = syncPosition(state, portfolio, quotes, cfg);
 
-  // --- DEFENSE: deterministic protective exit (cooldown/min-hold exempt) ---
+  // --- DEFENSE: deterministic protective exit (cooldown/min-hold exempt; price-only, no TA) ---
   let proposal: TradeProposal | null = evaluateExit(cfg, { regime, quotes, portfolio, state, ...(global.fearGreed !== undefined ? { fearGreed: global.fearGreed } : {}) });
 
   // --- OFFENSE: new entries / rotations only when not blocked (caps, cooldown, re-entry) ---
   if (!proposal && !offenseBlock) {
+    // Fetch technicals now — only offense needs them. Focus the budget on the strongest movers
+    // plus whatever we currently hold.
+    const ranked = [...quotes].sort((a, b) => (b.pctChange24h ?? 0) - (a.pctChange24h ?? 0)).map((q) => q.symbol);
+    const heldSymbol = portfolio.holdings.filter((h) => !isStable(h.symbol) && h.valueUsd > 1).sort((a, b) => b.valueUsd - a.valueUsd)[0]?.symbol;
+    const techSymbols = [...new Set([...(heldSymbol ? [heldSymbol] : []), ...ranked].filter((s) => WATCHLIST.includes(s)))].slice(0, 4);
+    const technicals = await Promise.all(techSymbols.map((s) => data.technicals(s)));
+    ledger.append('data', { kind: 'technicals', techSymbols, count: technicals.length });
+
     if (cfg.llm.enabled) {
       const llm = new OpenAICompatLlm(cfg);
       const holdingsSummary = portfolio.holdings.map((h) => `${h.symbol}:$${h.valueUsd.toFixed(0)}`).join(' ');

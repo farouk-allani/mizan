@@ -25,6 +25,8 @@ const cfg = {
     minHoldMinutes: 90,
     reentryCooldownMinutes: 180,
     trailingStopPct: 0.08,
+    profitLockArmPct: 0.05,
+    profitLockTrailPct: 0.03,
     switchMarginScore: 4,
     maxVolatilePctOfEquity: 0.6,
     contrarianEnabled: true,
@@ -231,6 +233,30 @@ test('exit: armed or not, the trailing stop still protects a contrarian position
   });
   assert.ok(p);
   assert.match(p.rationale, /trailing stop/);
+});
+
+test('profit-lock: once well in profit, a tighter trail exits where the wide trail would not', () => {
+  // entry 100, peak 120 (+20% from entry => profit-locked), price 115.2 = -4% from peak.
+  // Normal 8% trail would HOLD (-4% < 8%); the 3% profit-lock trail must EXIT.
+  const p = evaluateExit(cfg, {
+    regime: regime('risk_on', 0.4),
+    quotes: [quote('PENDLE', 5, 115.2)],
+    portfolio: portfolio(100, [{ symbol: 'PENDLE', amount: 1, valueUsd: 100 }]),
+    state: { ...baseState, positionSymbol: 'PENDLE', positionEntryPriceUsd: 100, positionPeakPriceUsd: 120 },
+  });
+  assert.ok(p);
+  assert.match(p.rationale, /profit-lock stop/);
+});
+
+test('profit-lock: stays on the wide trail when the position is not yet in profit', () => {
+  // entry 100, peak 104, price 100 (gain 0% < 5% arm) => wide 8% trail; -3.8% from peak => HOLD.
+  const p = evaluateExit(cfg, {
+    regime: regime('risk_on', 0.4),
+    quotes: [quote('PENDLE', 5, 100)],
+    portfolio: portfolio(100, [{ symbol: 'PENDLE', amount: 1, valueUsd: 100 }]),
+    state: { ...baseState, positionSymbol: 'PENDLE', positionEntryPriceUsd: 100, positionPeakPriceUsd: 104 },
+  });
+  assert.equal(p, null);
 });
 
 // ---------- CONTRARIAN sleeve: contrarianPropose ----------

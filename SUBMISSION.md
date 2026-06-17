@@ -47,9 +47,13 @@ holds until that answer changes.
    the held token by a margin sized to cover the round-trip cost** — never between near-ties.
    A deterministic target-allocation engine drives the same policy whenever the LLM holds.
 3. **Defense (exits, deterministic):** a per-position **trailing stop** (doubling as a hard
-   stop-loss) and a **regime flip to risk_off** flatten to USDT. Protective exits are exempt
-   from the anti-churn timers so capital preservation never waits. A let-winners-run guard
-   suppresses any discretionary LLM sell of a healthy holding — defense owns that call.
+   stop-loss) and a **regime flip to risk_off** flatten to USDT. A **profit-lock** tightens the
+   trail once a position is meaningfully in profit, so a reversal banks the gain instead of
+   round-tripping it — while genuine trends still run. Protective exits are exempt from the
+   anti-churn timers so capital preservation never waits; a let-winners-run guard suppresses any
+   discretionary LLM sell of a healthy holding. The loop runs on a tight interval and a held
+   position is monitored with a price-only cycle (no paid technicals), keeping the stop reactive
+   without burning the x402 budget.
 4. **Contrarian sleeve (extreme fear):** when Fear & Greed hits capitulation (≤25), momentum
    offense stays out — but that is where bounces start, so MIZAN may take a *small, tightly
    capped* mean-reversion bet on an oversold-and-*turning* quality token (RSI recovering +

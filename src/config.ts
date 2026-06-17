@@ -72,6 +72,13 @@ export const ConfigSchema = z
        */
       trailingStopPct: z.number().min(0.01).max(0.5).default(0.08),
       /**
+       * Profit-lock: once a position is up at least profitLockArmPct from entry, tighten the
+       * trailing stop to profitLockTrailPct so a reversal banks most of the gain instead of
+       * round-tripping it. A genuine trend still runs — the tighter stop trails the rising peak.
+       */
+      profitLockArmPct: z.number().min(0).default(0.05),
+      profitLockTrailPct: z.number().min(0.005).max(0.5).default(0.03),
+      /**
        * OFFENSE anti-churn: only rotate the held token into a different one when the new
        * candidate's momentum+technical score beats the held score by more than this margin
        * (sized to cover the ~1% round-trip cost). Prevents flip-flopping between near-ties.
@@ -177,6 +184,13 @@ export const ConfigSchema = z
         code: z.ZodIssueCode.custom,
         path: ['risk', 'hardStopDrawdownPct'],
         message: 'hardStopDrawdownPct must exceed maxDrawdownPct (the permanent stop sits beyond the soft breaker).',
+      });
+    }
+    if (cfg.risk.profitLockTrailPct > cfg.risk.trailingStopPct) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['risk', 'profitLockTrailPct'],
+        message: 'profitLockTrailPct must be <= trailingStopPct (the profit-lock tightens the trail, never loosens it).',
       });
     }
   });

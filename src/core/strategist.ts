@@ -300,12 +300,19 @@ export function evaluateExit(
   const peak = ctx.state.positionPeakPriceUsd ?? pos.priceUsd;
   const armed = contrarianArmed(cfg, ctx.fearGreed);
 
+  // Profit-lock: tighten the trail once the position is up enough from entry, so a reversal
+  // banks most of the gain rather than round-tripping it back to ~breakeven.
+  const entry = ctx.state.positionEntryPriceUsd;
+  const gainFromEntry = entry && entry > 0 && pos.priceUsd > 0 ? (pos.priceUsd - entry) / entry : 0;
+  const profitLocked = cfg.risk.profitLockArmPct > 0 && gainFromEntry >= cfg.risk.profitLockArmPct;
+  const trail = profitLocked ? cfg.risk.profitLockTrailPct : cfg.risk.trailingStopPct;
+
   let reason: string | null = null;
   if (ctx.regime.regime === 'risk_off' && !armed) {
     reason = `regime risk_off (score ${ctx.regime.score}): de-risk ${pos.symbol} to ${stable}`;
-  } else if (pos.priceUsd > 0 && peak > 0 && pos.priceUsd <= peak * (1 - cfg.risk.trailingStopPct)) {
+  } else if (pos.priceUsd > 0 && peak > 0 && pos.priceUsd <= peak * (1 - trail)) {
     const drop = ((peak - pos.priceUsd) / peak) * 100;
-    reason = `trailing stop: ${pos.symbol} -${drop.toFixed(1)}% from peak (>${(cfg.risk.trailingStopPct * 100).toFixed(0)}%)`;
+    reason = `${profitLocked ? 'profit-lock stop' : 'trailing stop'}: ${pos.symbol} -${drop.toFixed(1)}% from peak (>${(trail * 100).toFixed(0)}%)`;
   }
   if (!reason) return null;
 

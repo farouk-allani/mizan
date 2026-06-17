@@ -15,9 +15,10 @@ venues:
     enabled: false     # reserved port; no adapter ships. See ARCHITECTURE.md §Venues.
 
 loop:
-  intervalMinutes: 60             # paper: 15 is fine for diagnostics. LIVE: keep 60+ to avoid churn and x402 burn.
-                                  # x402 costs 0.01 USDC/call, ~2 paid REST calls/cycle; 60-min ≈ $3.40/week,
-                                  # leaving room inside a 20 USDC Base budget.
+  intervalMinutes: 30             # 30 keeps the trailing stop reactive to fast reversals.
+                                  # Holding/monitoring cycles fetch only price (no technicals),
+                                  # so x402 ≈ 2 calls/cycle ≈ $7-9/week — inside a 20 USDC budget.
+                                  # Anti-churn is handled by the strategy, not the loop interval.
   killSwitchPath: ./KILL
 
 risk:
@@ -32,6 +33,8 @@ risk:
   minHoldMinutes: 90              # blocks fast discretionary round trips; risk_exit exempt
   reentryCooldownMinutes: 180     # anti-whipsaw: stand down from new entries after a stop-out
   trailingStopPct: 0.08           # DEFENSE: exit a winner that gives back >8% from its peak
+  profitLockArmPct: 0.05          # once a position is +5% from entry...
+  profitLockTrailPct: 0.03        # ...tighten the trail to 3% so reversals bank the gain
   switchMarginScore: 4            # OFFENSE: only rotate when a leader is *materially* stronger
   maxVolatilePctOfEquity: 0.6     # concentrated-but-clamped volatile ceiling
   contrarianEnabled: true         # in extreme fear, take a small capped mean-reversion bet
