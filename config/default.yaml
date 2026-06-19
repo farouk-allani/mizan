@@ -39,6 +39,8 @@ risk:
   maxVolatilePctOfEquity: 0.6     # concentrated-but-clamped volatile ceiling
   contrarianEnabled: true         # in extreme fear, take a small capped mean-reversion bet
   contrarianFearThreshold: 25     # only when Fear & Greed <= 25 (deep capitulation)
+  contrarianTurnBuffer: 3         # ...AND only once F&G turns up >=3 pts off its recent low
+  contrarianMaxEntriesPerDay: 2   # backstop: max contrarian probes per UTC day
   contrarianMaxTradePctOfEquity: 0.10   # smaller per-trade cap for contrarian probes
   contrarianMaxVolatilePctOfEquity: 0.25  # smaller volatile ceiling while running contrarian
   minPortfolioUsd: 25             # never approach the $1 dust rule

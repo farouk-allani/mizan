@@ -245,9 +245,35 @@ export function syncPosition(state: AgentState, portfolio: PortfolioSnapshot, qu
   return { ...state, positionPeakPriceUsd: peak };
 }
 
-/** Contrarian sleeve is armed when enabled and Fear & Greed is at/below the capitulation floor. */
-export function contrarianArmed(cfg: Config, fearGreed: number | undefined): boolean {
-  return cfg.risk.contrarianEnabled && fearGreed !== undefined && fearGreed <= cfg.risk.contrarianFearThreshold;
+const FEAR_LOOKBACK_HOURS = 12;
+
+/** Append the current Fear & Greed reading and prune to the rolling lookback window. */
+export function recordFearGreed(state: AgentState, fearGreed: number | undefined, now: Date = new Date()): AgentState {
+  if (fearGreed === undefined) return state;
+  const cutoff = now.getTime() - FEAR_LOOKBACK_HOURS * 3_600_000;
+  const kept = (state.fearGreedHistory ?? []).filter((h) => new Date(h.ts).getTime() >= cutoff);
+  return { ...state, fearGreedHistory: [...kept, { ts: now.toISOString(), value: fearGreed }] };
+}
+
+/** Lowest Fear & Greed over the recent lookback window (the knife's recent low). */
+export function recentFearLow(state: AgentState, now: Date = new Date()): number | undefined {
+  const cutoff = now.getTime() - FEAR_LOOKBACK_HOURS * 3_600_000;
+  const vals = (state.fearGreedHistory ?? []).filter((h) => new Date(h.ts).getTime() >= cutoff).map((h) => h.value);
+  return vals.length ? Math.min(...vals) : undefined;
+}
+
+/**
+ * Contrarian sleeve is armed only when BOTH:
+ *  - Fear & Greed is at/below the capitulation floor (extreme fear), AND
+ *  - fear has turned UP at least `contrarianTurnBuffer` points above its recent low.
+ * The second clause is the "don't catch a falling knife" gate: while a bear is still making new
+ * fear lows the sleeve stays in cash; it only deploys once fear genuinely stabilizes/turns.
+ */
+export function contrarianArmed(cfg: Config, fearGreed: number | undefined, recentLow: number | undefined): boolean {
+  if (!cfg.risk.contrarianEnabled) return false;
+  if (fearGreed === undefined || fearGreed > cfg.risk.contrarianFearThreshold) return false;
+  if (recentLow === undefined) return false; // no history yet → stay out (conservative)
+  return fearGreed >= recentLow + cfg.risk.contrarianTurnBuffer;
 }
 
 /**
@@ -291,14 +317,16 @@ function bestReversal(quotes: TokenQuote[], technicals: TechnicalSnapshot[], sta
  */
 export function evaluateExit(
   cfg: Config,
-  ctx: { regime: RegimeReading; quotes: TokenQuote[]; portfolio: PortfolioSnapshot; state: AgentState; fearGreed?: number },
+  ctx: { regime: RegimeReading; quotes: TokenQuote[]; portfolio: PortfolioSnapshot; state: AgentState; fearGreed?: number; recentFearLow?: number },
 ): TradeProposal | null {
   const stable = cfg.risk.stableSymbol;
   const pos = findPosition(ctx.portfolio, ctx.quotes, cfg);
   if (!pos || pos.symbol.toUpperCase() === stable.toUpperCase()) return null;
 
   const peak = ctx.state.positionPeakPriceUsd ?? pos.priceUsd;
-  const armed = contrarianArmed(cfg, ctx.fearGreed);
+  // Suspend the risk_off auto-exit only while the sleeve is armed (fear turning up). If fear is
+  // still deepening, `armed` is false → the regime exit re-engages and cuts the bet to cash.
+  const armed = contrarianArmed(cfg, ctx.fearGreed, ctx.recentFearLow);
 
   // Profit-lock: tighten the trail once the position is up enough from entry, so a reversal
   // banks most of the gain rather than round-tripping it back to ~breakeven.
@@ -455,9 +483,10 @@ export function contrarianPropose(
     technicals: TechnicalSnapshot[];
     portfolio: PortfolioSnapshot;
     fearGreed?: number;
+    recentFearLow?: number;
   },
 ): TradeProposal | null {
-  if (!contrarianArmed(cfg, ctx.fearGreed)) return null;
+  if (!contrarianArmed(cfg, ctx.fearGreed, ctx.recentFearLow)) return null;
 
   const stable = cfg.risk.stableSymbol;
   const equity = ctx.portfolio.totalUsd;

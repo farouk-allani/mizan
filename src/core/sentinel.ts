@@ -141,6 +141,7 @@ export function rollState(state: AgentState, equityUsd: number, cfg: Config, now
     next.dayKey = dayKey;
     next.tradesToday = 0;
     next.notionalTodayUsd = 0;
+    next.contrarianEntriesToday = 0;
   }
   next.lastEquityUsd = equityUsd;
 

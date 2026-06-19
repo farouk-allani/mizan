@@ -130,6 +130,11 @@ export interface AgentState {
   equityPeakAllTimeUsd?: number;
   /** Set once the permanent hard-stop engages; the agent never re-risks for the rest of the run. */
   hardStopped?: boolean;
+  /** Recent Fear & Greed readings (pruned to a rolling window) — used to detect whether fear is
+   *  *turning up off its low* before arming the contrarian sleeve (don't catch a falling knife). */
+  fearGreedHistory?: { ts: string; value: number }[];
+  /** Contrarian probes opened today (UTC) — capped per day as a falling-knife backstop. */
+  contrarianEntriesToday?: number;
   lastEquityUsd: number;
   tradesToday: number;
   notionalTodayUsd: number;

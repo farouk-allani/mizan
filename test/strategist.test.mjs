@@ -7,6 +7,9 @@ import {
   syncPosition,
   inReentryCooldown,
   contrarianPropose,
+  contrarianArmed,
+  recordFearGreed,
+  recentFearLow,
 } from '../dist/core/strategist.js';
 
 const cfg = {
@@ -31,6 +34,8 @@ const cfg = {
     maxVolatilePctOfEquity: 0.6,
     contrarianEnabled: true,
     contrarianFearThreshold: 25,
+    contrarianTurnBuffer: 3,
+    contrarianMaxEntriesPerDay: 2,
     contrarianMaxTradePctOfEquity: 0.10,
     contrarianMaxVolatilePctOfEquity: 0.25,
     minPortfolioUsd: 25,
@@ -212,15 +217,27 @@ test('exit: does NOT dump a position on a short-horizon trend wobble (no trend-b
   assert.equal(p, null);
 });
 
-test('exit: while contrarian sleeve is armed (extreme fear), the risk_off auto-exit is suspended', () => {
+test('exit: while sleeve armed (fear turning UP), the risk_off auto-exit is suspended', () => {
   const p = evaluateExit(cfg, {
     regime: regime('risk_off', -0.5),
     quotes: [quote('PENDLE', 5, 99)], // near peak, no trailing-stop trigger
     portfolio: portfolio(50, [{ symbol: 'PENDLE', amount: 0.5, valueUsd: 50 }]),
     state: { ...baseState, positionSymbol: 'PENDLE', positionPeakPriceUsd: 100 },
-    fearGreed: 24, // <= threshold => armed
+    fearGreed: 24, recentFearLow: 20, // 24 >= 20+3 => armed
   });
   assert.equal(p, null); // held, not reversed
+});
+
+test('exit: when fear is still DEEPENING (no turn), risk_off de-risk RE-ENGAGES and cuts to cash', () => {
+  const p = evaluateExit(cfg, {
+    regime: regime('risk_off', -0.5),
+    quotes: [quote('PENDLE', 5, 99)], // near peak, no trailing-stop trigger
+    portfolio: portfolio(50, [{ symbol: 'PENDLE', amount: 0.5, valueUsd: 50 }]),
+    state: { ...baseState, positionSymbol: 'PENDLE', positionPeakPriceUsd: 100 },
+    fearGreed: 20, recentFearLow: 20, // at the low, not turning => NOT armed
+  });
+  assert.ok(p); // de-risk fires instead of holding the knife
+  assert.match(p.rationale, /risk_off/);
 });
 
 test('exit: armed or not, the trailing stop still protects a contrarian position', () => {
@@ -229,7 +246,7 @@ test('exit: armed or not, the trailing stop still protects a contrarian position
     quotes: [quote('PENDLE', 5, 90)], // 90 <= 100*0.92 => trailing stop
     portfolio: portfolio(45, [{ symbol: 'PENDLE', amount: 0.5, valueUsd: 45 }]),
     state: { ...baseState, positionSymbol: 'PENDLE', positionPeakPriceUsd: 100 },
-    fearGreed: 24,
+    fearGreed: 24, recentFearLow: 20,
   });
   assert.ok(p);
   assert.match(p.rationale, /trailing stop/);
@@ -261,17 +278,28 @@ test('profit-lock: stays on the wide trail when the position is not yet in profi
 
 // ---------- CONTRARIAN sleeve: contrarianPropose ----------
 
-test('contrarian: in extreme fear, opens a small capped bet on an oversold-and-turning token', () => {
+test('contrarian: in extreme fear that is TURNING UP, opens a small capped bet on an oversold-and-turning token', () => {
   const p = contrarianPropose(cfg, {
     regime: regime('risk_off', -0.5),
     quotes: [quote('CAKE', -3, 1)], // beaten down on 24h, but...
     technicals: [bullishTech('CAKE')], // RSI 58 (recovering) + MACD>0 => reversal confirmed
     portfolio: portfolio(100, [{ symbol: 'USDT', amount: 100, valueUsd: 100 }]),
-    fearGreed: 24,
+    fearGreed: 24, recentFearLow: 20, // fear turned up 4pts off its low => armed
   });
   assert.equal(p.toSymbol, 'CAKE');
   assert.equal(p.source, 'contrarian');
   assert.equal(p.usdNotional, 10); // contrarian per-trade cap 10% of 100
+});
+
+test('contrarian: stays OUT while fear is still deepening (no turn off the low)', () => {
+  const p = contrarianPropose(cfg, {
+    regime: regime('risk_off', -0.55),
+    quotes: [quote('CAKE', -3, 1)],
+    technicals: [bullishTech('CAKE')], // reversal signal present, but...
+    portfolio: portfolio(100, [{ symbol: 'USDT', amount: 100, valueUsd: 100 }]),
+    fearGreed: 20, recentFearLow: 20, // at the low, not turning => NOT armed => no knife-catch
+  });
+  assert.equal(p, null);
 });
 
 test('contrarian: stays out when fear is not extreme (above threshold)', () => {
@@ -280,7 +308,7 @@ test('contrarian: stays out when fear is not extreme (above threshold)', () => {
     quotes: [quote('CAKE', -3, 1)],
     technicals: [bullishTech('CAKE')],
     portfolio: portfolio(100, [{ symbol: 'USDT', amount: 100, valueUsd: 100 }]),
-    fearGreed: 40, // > 25 => not armed
+    fearGreed: 40, recentFearLow: 38, // > 25 => not armed
   });
   assert.equal(p, null);
 });
@@ -291,7 +319,7 @@ test('contrarian: refuses to catch a knife — no entry without a confirmed turn
     quotes: [quote('CAKE', -3, 1)],
     technicals: [bearishTech('CAKE')], // MACD<0 => not turning => no entry
     portfolio: portfolio(100, [{ symbol: 'USDT', amount: 100, valueUsd: 100 }]),
-    fearGreed: 24,
+    fearGreed: 24, recentFearLow: 20, // armed, but no reversal candidate
   });
   assert.equal(p, null);
 });
@@ -302,9 +330,33 @@ test('contrarian: disabled config never proposes', () => {
     quotes: [quote('CAKE', -3, 1)],
     technicals: [bullishTech('CAKE')],
     portfolio: portfolio(100, [{ symbol: 'USDT', amount: 100, valueUsd: 100 }]),
-    fearGreed: 24,
+    fearGreed: 24, recentFearLow: 20,
   });
   assert.equal(p, null);
+});
+
+// ---------- Fear-direction gate: contrarianArmed / recordFearGreed / recentFearLow ----------
+
+test('contrarianArmed: requires both extreme fear AND a turn up off the recent low', () => {
+  assert.equal(contrarianArmed(cfg, 24, 20), true);  // 24 >= 20+3 => turned up
+  assert.equal(contrarianArmed(cfg, 22, 20), false); // 22 < 23 => not enough of a turn
+  assert.equal(contrarianArmed(cfg, 20, 20), false); // sitting at the low => knife still falling
+  assert.equal(contrarianArmed(cfg, 30, 18), false); // 30 > threshold 25 => not extreme fear
+  assert.equal(contrarianArmed(cfg, 24, undefined), false); // no history => conservative, stay out
+});
+
+test('recordFearGreed + recentFearLow: track the rolling low, prune old readings', () => {
+  const now = new Date();
+  let s = baseState;
+  s = recordFearGreed(s, 25, new Date(now.getTime() - 2 * 3600_000));
+  s = recordFearGreed(s, 20, new Date(now.getTime() - 1 * 3600_000));
+  s = recordFearGreed(s, 23, now);
+  assert.equal(recentFearLow(s, now), 20); // min over the window
+
+  // a reading older than the 12h window is pruned and no longer counts toward the low
+  let s2 = recordFearGreed(baseState, 10, new Date(now.getTime() - 20 * 3600_000));
+  s2 = recordFearGreed(s2, 22, now);
+  assert.equal(recentFearLow(s2, now), 22); // the stale 10 was dropped
 });
 
 // ---------- Anti-whipsaw: inReentryCooldown ----------

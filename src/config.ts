@@ -96,6 +96,15 @@ export const ConfigSchema = z
       contrarianEnabled: z.boolean().default(true),
       /** Arm the sleeve only at/below this Fear & Greed (deep capitulation). */
       contrarianFearThreshold: z.number().min(0).max(100).default(25),
+      /**
+       * Fear-DIRECTION gate: arm the contrarian sleeve only when Fear & Greed has turned up at
+       * least this many points above its recent low (fear is lifting, not making new lows).
+       * This is the "wait for the knife to land" rule — it keeps the sleeve in cash while a bear
+       * is still deepening, and only deploys near a genuine capitulation turn.
+       */
+      contrarianTurnBuffer: z.number().min(0).default(3),
+      /** Cap on contrarian probes per UTC day — backstop against repeated knife-catching. */
+      contrarianMaxEntriesPerDay: z.number().int().min(0).default(2),
       /** Per-trade cap for contrarian probes — smaller than the momentum cap. */
       contrarianMaxTradePctOfEquity: z.number().min(0.001).max(0.5).default(0.10),
       /** Volatile-exposure ceiling while running the contrarian sleeve — smaller than momentum. */

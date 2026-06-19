@@ -8,6 +8,8 @@ import {
   inReentryCooldown,
   isStable,
   reconcileLlmProposal,
+  recentFearLow,
+  recordFearGreed,
   rulesFallbackPropose,
   strategistPropose,
   syncPosition,
@@ -116,6 +118,7 @@ async function settle(proposal: TradeProposal, ctx: SettleCtx, state: AgentState
       lastTradeFromSymbol: proposal.fromSymbol,
       lastTradeToSymbol: proposal.toSymbol,
       lastTradeSource: proposal.source,
+      ...(proposal.source === 'contrarian' ? { contrarianEntriesToday: (state.contrarianEntriesToday ?? 0) + 1 } : {}),
     };
   }
 
@@ -134,6 +137,7 @@ async function settle(proposal: TradeProposal, ctx: SettleCtx, state: AgentState
       lastTradeFromSymbol: proposal.fromSymbol,
       lastTradeToSymbol: proposal.toSymbol,
       lastTradeSource: proposal.source,
+      ...(proposal.source === 'contrarian' ? { contrarianEntriesToday: (state.contrarianEntriesToday ?? 0) + 1 } : {}),
     };
   }
   await ctx.notifier.send(`❌ Swap failed [${r.errorCode}]: ${r.error}`);
@@ -238,8 +242,17 @@ async function cycle(deps: {
   // Position memory (entry/peak) synced from portfolio truth — drives trailing stop & scale-in.
   state = syncPosition(state, portfolio, quotes, cfg);
 
+  // Record Fear & Greed and compute its recent low — the contrarian sleeve only arms once fear
+  // has turned UP off this low (don't catch a falling knife in a still-deepening bear).
+  state = recordFearGreed(state, global.fearGreed);
+  const fearLow = recentFearLow(state);
+  const fearCtx = {
+    ...(global.fearGreed !== undefined ? { fearGreed: global.fearGreed } : {}),
+    ...(fearLow !== undefined ? { recentFearLow: fearLow } : {}),
+  };
+
   // --- DEFENSE: deterministic protective exit (cooldown/min-hold exempt; price-only, no TA) ---
-  let proposal: TradeProposal | null = evaluateExit(cfg, { regime, quotes, portfolio, state, ...(global.fearGreed !== undefined ? { fearGreed: global.fearGreed } : {}) });
+  let proposal: TradeProposal | null = evaluateExit(cfg, { regime, quotes, portfolio, state, ...fearCtx });
 
   // --- OFFENSE: new entries / rotations only when not blocked (caps, cooldown, re-entry) ---
   if (!proposal && !offenseBlock) {
@@ -278,10 +291,11 @@ async function cycle(deps: {
       if (proposal) ledger.append('rules_fallback', proposal);
     }
 
-    // Last: the contrarian sleeve. Only fires in extreme fear (where momentum offense stays
-    // out), taking a small capped mean-reversion bet on an oversold-and-turning quality token.
-    if (!proposal) {
-      proposal = contrarianPropose(cfg, { regime, quotes, technicals, portfolio, ...(global.fearGreed !== undefined ? { fearGreed: global.fearGreed } : {}) });
+    // Last: the contrarian sleeve. Only fires in extreme fear that is TURNING UP (see
+    // contrarianArmed), capped to a few probes/day, taking a small mean-reversion bet on an
+    // oversold-and-turning quality token.
+    if (!proposal && (state.contrarianEntriesToday ?? 0) < cfg.risk.contrarianMaxEntriesPerDay) {
+      proposal = contrarianPropose(cfg, { regime, quotes, technicals, portfolio, ...fearCtx });
       if (proposal) ledger.append('rules_fallback', proposal);
     }
   }
