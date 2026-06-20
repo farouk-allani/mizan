@@ -40,12 +40,14 @@ holds until that answer changes.
    aggregate derivatives funding rate, and the Altcoin Season index classifies each
    cycle as `risk_on / neutral / risk_off`. Derivatives data is read strictly as a
    *sentiment thermometer* — MIZAN never trades derivatives (see Compliance).
-2. **Offense (entries & rotations):** in `risk_on`/`neutral` the LLM strategist proposes
-   deploying into the strongest momentum names on the 149-token BSC allowlist (CAKE, FLOKI,
-   TWT, PENDLE, INJ, FET, …), confirmed by RSI/MACD on the cycle's top movers. Capital scales
-   toward a concentrated-but-clamped volatile target; we **rotate only when a candidate beats
-   the held token by a margin sized to cover the round-trip cost** — never between near-ties.
-   A deterministic target-allocation engine drives the same policy whenever the LLM holds.
+2. **Offense (entries & rotations) — `risk_on` only:** momentum deploys *only* in a confirmed
+   uptrend. The LLM strategist proposes deploying into the strongest momentum names on the
+   149-token BSC allowlist (CAKE, FLOKI, TWT, PENDLE, INJ, FET, …), confirmed by RSI/MACD on the
+   cycle's top movers; in `neutral`/`risk_off` chop it holds cash (buying strength in neutral is
+   a buy-the-top round trip, not edge). Capital scales toward a concentrated-but-clamped volatile
+   target; we **rotate only when a candidate beats the held token by a margin sized to cover the
+   round-trip cost** — never between near-ties. A deterministic target-allocation engine drives
+   the same policy whenever the LLM holds.
 3. **Defense (exits, deterministic):** a per-position **trailing stop** (doubling as a hard
    stop-loss) and a **regime flip to risk_off** flatten to USDT. A **profit-lock** tightens the
    trail once a position is meaningfully in profit, so a reversal banks the gain instead of

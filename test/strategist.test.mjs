@@ -77,6 +77,16 @@ test('offense stays out in risk-off (defense de-risks)', () => {
   assert.equal(p, null);
 });
 
+test('momentum stays out in NEUTRAL — only deploys in a confirmed risk_on uptrend', () => {
+  const p = rulesFallbackPropose(cfg, {
+    regime: regime('neutral', -0.05), // strong candidate, but not risk_on
+    quotes: [quote('CAKE', 12)],
+    technicals: [bullishTech('CAKE')],
+    portfolio: portfolio(100, [{ symbol: 'USDT', amount: 100, valueUsd: 100 }]),
+  });
+  assert.equal(p, null); // no buy-the-top in neutral chop
+});
+
 test('offense stays flat when momentum is weak', () => {
   const p = rulesFallbackPropose(cfg, {
     regime: regime('risk_on', 0.4),
@@ -418,7 +428,15 @@ test('reconcile: blocks an LLM entry into volatile during risk_off (defense woul
   assert.equal(out, null);
 });
 
-test('reconcile: leaves entries and rotations untouched', () => {
+test('reconcile: blocks an LLM entry/rotation into volatile in NEUTRAL (momentum is risk_on-only)', () => {
+  const entry = { ...llmSell, fromSymbol: 'USDT', toSymbol: 'CAKE' };
+  const rotation = { ...llmSell, fromSymbol: 'PENDLE', toSymbol: 'CAKE' };
+  const ctx = { regime: regime('neutral', -0.05), quotes: [quote('PENDLE', 5, 100)], portfolio: portfolio(50, [{ symbol: 'PENDLE', amount: 0.5, valueUsd: 50 }]) };
+  assert.equal(reconcileLlmProposal(entry, cfg, ctx), null);
+  assert.equal(reconcileLlmProposal(rotation, cfg, ctx), null);
+});
+
+test('reconcile: leaves entries and rotations untouched in risk_on', () => {
   const entry = { ...llmSell, fromSymbol: 'USDT', toSymbol: 'CAKE' };
   const rotation = { ...llmSell, fromSymbol: 'PENDLE', toSymbol: 'CAKE' };
   const ctx = { regime: regime('risk_on', 0.4), quotes: [quote('PENDLE', 5, 100)], portfolio: portfolio(50, [{ symbol: 'PENDLE', amount: 0.5, valueUsd: 50 }]) };

@@ -54,7 +54,10 @@ stable while the regime is not risk_off, that proposal is overridden and the cyc
 Hard facts you must respect (violations are discarded by a deterministic Sentinel, wasting the cycle):
 - You may only propose swaps between symbols in the provided allowlist.
 - Spot only. No leverage, no perps, no shorting. You may READ derivatives data as sentiment.
-- Regime: risk_on/neutral => be deployed in momentum leaders; risk_off => the defense module handles de-risking.
+- Regime: ONLY deploy momentum (enter/rotate into a token) in risk_on — a confirmed uptrend. In
+  neutral or risk_off, hold cash / hold what you have; a deterministic contrarian module handles
+  fear dip-buying and a defense module handles de-risking. A momentum buy proposed outside risk_on
+  is overridden, wasting the cycle.
 - Every swap costs ~0.4-0.5% in spread/impact per leg (~1% round trip), marked against mid. Only ENTER or ROTATE
   when the expected edge clearly beats that cost. Prefer HOLDING an asset you already own that is still trending.
 - Do not churn. Rotate to a different token only when it is *materially* stronger than what you hold.
@@ -355,9 +358,13 @@ export function evaluateExit(
 }
 
 /**
- * Let-winners-run guard. Defense owns exits, so a discretionary LLM sell of the held
- * position to a stable is suppressed unless the regime is risk_off (where de-risking is
- * legitimate). Entries and volatile→volatile rotations pass through untouched.
+ * Let-winners-run + regime guard over LLM proposals.
+ *  - Momentum (acquiring a volatile — entry or rotation) is allowed ONLY in a confirmed
+ *    `risk_on` uptrend. In `neutral`/`risk_off` chop it's suppressed: the ledger shows momentum
+ *    buys in neutral are "buy-the-top → fade" round trips (exit liquidity), never net winners.
+ *    Dip-buying in fear is handled separately by the contrarian sleeve, which is untouched.
+ *  - Selling to stable: a legitimate de-risk in `risk_off`; otherwise let winners run (defense
+ *    owns exits), so a discretionary sell of the held position is suppressed.
  */
 export function reconcileLlmProposal(
   proposal: TradeProposal | null,
@@ -366,11 +373,9 @@ export function reconcileLlmProposal(
 ): TradeProposal | null {
   if (!proposal || proposal.source !== 'strategist_llm') return proposal;
   const acquiresVolatile = !isStable(proposal.toSymbol);
-  // risk_off: the policy is "be in stables". Block any LLM proposal that *acquires* volatile
-  // (entry or rotation) — otherwise defense de-risks it next cycle, a guaranteed round trip.
-  if (ctx.regime.regime === 'risk_off' && acquiresVolatile) return null;
-  if (acquiresVolatile) return proposal; // entry or rotation in a constructive regime — allowed
-  // Selling to stable: legitimate de-risk in risk_off, otherwise let winners run (defense owns exits).
+  // Momentum deploys only in a real uptrend; sit out neutral/risk_off (contrarian covers fear).
+  if (acquiresVolatile) return ctx.regime.regime === 'risk_on' ? proposal : null;
+  // Selling to stable: legitimate de-risk in risk_off, otherwise let winners run.
   if (ctx.regime.regime === 'risk_off') return proposal;
   const pos = findPosition(ctx.portfolio, ctx.quotes, cfg);
   if (pos && proposal.fromSymbol.toUpperCase() === pos.symbol.toUpperCase()) return null; // hold the winner
@@ -379,9 +384,10 @@ export function reconcileLlmProposal(
 
 /**
  * OFFENSE fallback — deterministic target-allocation. Runs only when the LLM holds/errors.
- * Position-aware so it never fights an existing holding: it holds winners, scales toward the
- * volatile target in constructive regimes, and rotates only on a materially stronger leader.
- * Sentinel still validates every proposal before any quote/signing.
+ * Momentum deploys ONLY in a confirmed `risk_on` uptrend — in `neutral`/`risk_off` it stays in
+ * cash (the ledger shows neutral momentum entries are buy-the-top round trips, not winners; fear
+ * dip-buying is the contrarian sleeve's job). Position-aware: holds winners, scales toward the
+ * volatile target, and rotates only on a materially stronger leader. Sentinel validates everything.
  */
 export function rulesFallbackPropose(
   cfg: Config,
@@ -395,14 +401,14 @@ export function rulesFallbackPropose(
   const stable = cfg.risk.stableSymbol;
   const equity = ctx.portfolio.totalUsd;
   if (equity < cfg.risk.minPortfolioUsd) return null;
-  if (ctx.regime.regime === 'risk_off') return null; // defense de-risks; offense stays out
+  if (ctx.regime.regime !== 'risk_on') return null; // momentum only in a real uptrend; else hold cash
 
   const candidate = bestMomentum(ctx.quotes, ctx.technicals, stable);
   if (!candidate) return null;
 
-  // Entry quality gate, slightly stricter in neutral than risk_on; require a confirmed uptrend.
-  const minScore = ctx.regime.regime === 'risk_on' ? 3 : 5;
-  const min24h = ctx.regime.regime === 'risk_on' ? 1 : 2;
+  // Entry quality gate (risk_on): meaningful 24h momentum + a confirmed uptrend.
+  const minScore = 3;
+  const min24h = 1;
   const candidatePasses =
     candidate.pct24h >= min24h && candidate.score >= minScore && trendConfirmed(candidate.quote.symbol, ctx.technicals);
 
