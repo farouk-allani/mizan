@@ -1,7 +1,7 @@
 import type { Config } from '../../config.js';
 import type { ExecutionResult, PortfolioSnapshot, TradeProposal } from '../../core/types.js';
 import type { ExecutionVenue, PortfolioReader } from '../../ports/index.js';
-import { COMPETITION_ALLOWLIST, tradableIdentifier } from '../../tokens/allowlist.js';
+import { COMPETITION_ALLOWLIST, CONTRACT_PINS, tradableIdentifier } from '../../tokens/allowlist.js';
 import { TwakCli, TwakError, type SwapExecOut, type SwapQuoteOut } from './cli.js';
 
 /**
@@ -81,15 +81,19 @@ export class TwakPortfolioReader implements PortfolioReader {
   constructor(private readonly cli: TwakCli) {}
 
   async snapshot(): Promise<PortfolioSnapshot> {
-    const raw = await this.cli.run<unknown>(['wallet', 'portfolio']);
     const asOf = new Date().toISOString();
+    const [raw, addrOut] = await Promise.all([
+      this.cli.run<unknown>(['wallet', 'portfolio']),
+      this.cli.run<{ address?: string }>(['wallet', 'address', '--chain', 'bsc']).catch(() => ({ address: undefined })),
+    ]);
 
     const obj = raw as Record<string, unknown>;
     const rowsRaw: unknown[] = Array.isArray(raw)
       ? raw
       : (obj?.holdings as unknown[]) ?? (obj?.tokens as unknown[]) ?? (obj?.assets as unknown[]) ?? [];
 
-    const holdings = rowsRaw
+    // 1. Stables/tokens that `twak wallet portfolio` DOES surface (USDT, USDC, …) on BSC.
+    const fromPortfolio = rowsRaw
       .map((h) => h as Record<string, unknown>)
       .filter((o) => String(o.chain ?? 'bsc').toLowerCase() === 'bsc' && String(o.type ?? 'token') !== 'native')
       .map((o) => ({
@@ -98,10 +102,29 @@ export class TwakPortfolioReader implements PortfolioReader {
         valueUsd: Number(o.usdValue ?? o.valueUsd ?? o.value ?? 0),
       }))
       // Count ONLY competition-eligible assets toward equity. A priced scam-airdrop on BSC
-      // would otherwise inflate equity and distort the per-trade cap, daily cap, and the
-      // drawdown breaker. This also keeps internal equity aligned with the scored portfolio.
+      // would otherwise inflate equity and distort the per-trade cap, daily cap, and breaker.
       .filter((h) => h.symbol && COMPETITION_ALLOWLIST.has(h.symbol));
 
+    // 2. Alt tokens (CAKE, UNI, …) — `twak wallet portfolio`'s backend does NOT index arbitrary
+    //    BEP-20s, so query each pinned contract's on-chain balance directly. Without this the
+    //    bot can't SEE its own volatile positions → phantom drawdown + broken position logic.
+    const address = (addrOut as { address?: string })?.address;
+    const seen = new Set(fromPortfolio.map((h) => h.symbol.toUpperCase()));
+    const fromBalance: { symbol: string; amount: number; valueUsd: number }[] = [];
+    if (address) {
+      const pins = Object.entries(CONTRACT_PINS).filter(([sym]) => !seen.has(sym.toUpperCase()));
+      const results = await Promise.all(
+        pins.map(([symbol, contract]) =>
+          this.cli
+            .run<Record<string, unknown>>(['balance', '--chain', 'bsc', '--token', contract, '--address', address])
+            .then((b) => ({ symbol, amount: Number(b.total ?? b.available ?? 0), valueUsd: Number(b.totalUsd ?? 0) }))
+            .catch(() => ({ symbol, amount: 0, valueUsd: 0 })),
+        ),
+      );
+      for (const r of results) if (r.amount > 0 && r.valueUsd > 0) fromBalance.push(r);
+    }
+
+    const holdings = [...fromPortfolio, ...fromBalance];
     const totalUsd = holdings.reduce((s, h) => s + h.valueUsd, 0);
     return { totalUsd, holdings, asOf };
   }
